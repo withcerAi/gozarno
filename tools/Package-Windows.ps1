@@ -45,9 +45,12 @@ if(Test-Path -LiteralPath $noticeTarget) {
 }
 Copy-Item (Join-Path $projectRoot '.tools/msys64/mingw64/share/licenses') -Destination $noticeTarget -Recurse
 Copy-Item (Join-Path $projectRoot 'LICENSE.txt') -Destination (Join-Path $stage 'licenses/Gozarno-GPL.txt')
+Copy-Item (Join-Path $projectRoot 'docs/licenses/*') -Destination (Join-Path $stage 'licenses')
+Copy-Item (Join-Path $projectRoot '.tools/openconnect/COPYING.LGPL') -Destination (Join-Path $stage 'licenses/OpenConnect-LGPL-2.1.txt')
 Copy-Item (Join-Path $projectRoot 'build-dependencies/wintun/wintun/LICENSE.txt') -Destination (Join-Path $stage 'licenses/Wintun.txt')
 Copy-Item (Join-Path $projectRoot 'docs/client-modernization.md') -Destination (Join-Path $stage 'README.md')
 Copy-Item (Join-Path $projectRoot 'docs/third-party.md') -Destination (Join-Path $stage 'licenses/third-party.md')
+Copy-Item (Join-Path $projectRoot 'docs/source-build.md') -Destination (Join-Path $stage 'licenses/source-build.md')
 $uninstallCommands=New-Object Collections.Generic.List[string]
 Get-ChildItem -LiteralPath $stage -Recurse -File | ForEach-Object {
   $relative=$_.FullName.Substring($stage.Length+1)

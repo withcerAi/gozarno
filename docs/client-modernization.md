@@ -81,7 +81,7 @@ without replacing another product's driver.
 ## Validation actually performed
 
 Native Release x64 build with GCC 16.2 and Qt 6.11.2 succeeded. Isolated client tests
-report **11 passes, zero failures**, covering rule validation, catalog integrity,
+report **22 passes, zero failures**, covering rule validation, catalog integrity,
 secret exclusion, Windows encryption, fragmented SOCKS requests/authentication and
 explicit failure of unavailable backends/tunnels. Real executable screenshots were
 inspected in dark/light and compact layouts, including account/routing dialogs.
@@ -110,7 +110,8 @@ cmake --build build-tests
 OpenConnect's legacy MinGW include patch is supplied in `tools/patches`.
 `tools/Prepare-Dependencies.ps1` stages verified dependencies without installing.
 `tools/Package-Windows.ps1` assembles runtime DLLs and compiles Setup.
-See `third-party.md` for licenses and source obligations, and `ui-review.md` for UI QA.
+See `source-build.md` for corresponding dependency sources and build instructions,
+`third-party.md` for licenses, and `ui-review.md` for UI QA.
 
 UI capture: `--preview-dir <directory> --preview-sample` uses isolated settings and
 fictional servers, saves screenshots, then exits. `--preview-light` and

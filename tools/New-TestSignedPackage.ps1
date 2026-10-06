@@ -1,7 +1,7 @@
-param([string]$CertificateThumbprint)
+param([string]$CertificateThumbprint, [string]$OutputDirectory)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-$output = Join-Path $root 'dist/test-signed/1.2.1'
+$output = if ($OutputDirectory) { [IO.Path]::GetFullPath($OutputDirectory) } else { Join-Path $root 'dist/test-signed/1.2.1' }
 $app = Join-Path $root 'dist/GozarnoVPN/GozarnoVPN.exe'
 $setup = Join-Path $root 'dist/GozarnoVPN-1.2.1-Setup-x64.exe'
 New-Item -ItemType Directory -Force -Path $output | Out-Null
