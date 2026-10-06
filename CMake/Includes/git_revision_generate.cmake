@@ -37,8 +37,8 @@ if(IS_DIRECTORY ${GIT_ROOT_DIR}/.git)
         string(REGEX REPLACE "^v[0-9]+\\.[0-9]+\\.[0-9]+(.*)" "\\1" VERSION_SHA1 "${GIT_COMMIT_ID}")
     endif()
 
-    set(PROJECT_VERSION "${GIT_COMMIT_ID}")
-    message(STATUS "Version: ${PROJECT_VERSION} [git]")
+    # Upstream tags do not describe the independently versioned Arovan product.
+    message(STATUS "Arovan version: ${PROJECT_VERSION}; upstream revision: ${GIT_COMMIT_ID}")
 else()
     message(STATUS "Version: ${PROJECT_VERSION} [cmake]")
 endif()
@@ -62,8 +62,5 @@ endif()
 
 message(STATUS "Processing config.h file...")
 file(READ ${OUTPUT_DIR}/config.h config_temp)
-string(FIND "${config_temp}" "undef PROJECT_VERSION" ALREADY_UPDATED)
-
-if(${ALREADY_UPDATED} LESS 0)
-file(APPEND ${OUTPUT_DIR}/config.h "#undef PROJECT_VERSION\n#define PROJECT_VERSION \"${PROJECT_VERSION}\"\n")
-endif()
+string(REGEX REPLACE "#undef PROJECT_VERSION\n#define PROJECT_VERSION [^\n]*\n" "" config_temp "${config_temp}")
+file(WRITE ${OUTPUT_DIR}/config.h "${config_temp}#undef PROJECT_VERSION\n#define PROJECT_VERSION \"${PROJECT_VERSION}\"\n")

@@ -1,0 +1,5 @@
+--- a/compat.c
++++ b/compat.c
+@@ -30 +30 @@
+-#include <sec_api/stdlib_s.h>
++#include <stdlib.h> /* Modern MinGW declares errno_t here. */

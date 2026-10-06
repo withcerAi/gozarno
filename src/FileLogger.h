@@ -1,6 +1,7 @@
 #pragma once
 
 #include "spdlog/sinks/rotating_file_sink.h"
+#include <spdlog/async.h>
 
 #include <QObject>
 #include <QStandardPaths>
@@ -33,4 +34,5 @@ private:
     size_t m_logCount;
 
     std::shared_ptr<spdlog::logger> m_logger;
+    std::shared_ptr<spdlog::details::thread_pool> m_pool;
 };

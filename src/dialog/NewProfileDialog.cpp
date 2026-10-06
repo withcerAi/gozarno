@@ -8,6 +8,10 @@
 #include <QPushButton>
 #include <OcSettings.h>
 #include <QUrl>
+#include <QMessageBox>
+#include <QLabel>
+#include "client/ServerCatalog.h"
+#include "client/ClientLanguage.h"
 
 #include <memory>
 
@@ -16,10 +20,19 @@ NewProfileDialog::NewProfileDialog(QWidget* parent)
     , ui(new Ui::NewProfileDialog)
 {
     ui->setupUi(this);
+    ClientLanguage::technical(ui->lineEditGateway);
+    ClientLanguage::technical(ui->protocolComboBox);
+    setWindowTitle(tr("Add server")); resize(580,390); setMinimumWidth(520);
+    ui->verticalLayout->setContentsMargins(28,28,28,28); ui->verticalLayout->setSpacing(22);
+    ui->formLayout->setSpacing(16);
+    auto* title=new QLabel(tr("Add a server"),this); title->setProperty("role","pageTitle"); ui->verticalLayout->insertWidget(0,title);
+    auto* hint=new QLabel(tr("Use the existing VPN address and protocol from your provider."),this); hint->setWordWrap(true); hint->setProperty("role","muted"); ui->verticalLayout->insertWidget(1,hint);
+    ui->lineEditGateway->setPlaceholderText("https://vpn.example.com");
+    ui->buttonBox->button(QDialogButtonBox::SaveAll)->setProperty("primary",true);
     VpnProtocolModel* model = new VpnProtocolModel(this);
     ui->protocolComboBox->setModel(model);
 
-    ui->buttonBox->button(QDialogButtonBox::SaveAll)->setText(tr("Save && Connect"));
+    ui->buttonBox->button(QDialogButtonBox::SaveAll)->setText(tr("Add && connect"));
     ui->buttonBox->button(QDialogButtonBox::SaveAll)->setDefault(true);
 
     ui->buttonBox->button(QDialogButtonBox::Save)->setEnabled(false);
@@ -112,7 +125,7 @@ void NewProfileDialog::on_lineEditGateway_textChanged(const QString& text)
 void NewProfileDialog::updateButtons()
 {
     bool enableButtons{ false };
-    if (ui->lineEditName->text().isEmpty() == false && ui->lineEditGateway->text().isEmpty() == false) {
+    if (ServerCatalog::validName(ui->lineEditName->text()) && ServerCatalog::validGateway(ui->lineEditGateway->text())) {
 
         enableButtons = true;
 
@@ -137,18 +150,25 @@ void NewProfileDialog::updateButtons()
 
 void NewProfileDialog::on_buttonBox_clicked(QAbstractButton* button)
 {
-    if (quick_connect == false && ui->buttonBox->standardButton(button) == QDialogButtonBox::SaveAll) {
-        emit connect();
-    }
+    connect_after_save = !quick_connect && ui->buttonBox->standardButton(button) == QDialogButtonBox::SaveAll;
 }
 
 void NewProfileDialog::on_buttonBox_accepted()
 {
+    QString gateway;
+    if (!ServerCatalog::validName(ui->lineEditName->text()) || !ServerCatalog::validGateway(ui->lineEditGateway->text(), &gateway)) {
+        QMessageBox::warning(this, tr("Invalid server"), tr("Enter a valid profile name and HTTPS gateway without embedded credentials."));
+        return;
+    }
     auto ss{ std::make_unique<StoredServer>() };
     ss->set_label(ui->lineEditName->text());
-    ss->set_server_gateway(ui->lineEditGateway->text());
+    ss->set_server_gateway(gateway);
     ss->set_protocol_name(ui->protocolComboBox->currentData(ROLE_PROTOCOL_NAME).toString());
-    ss->save();
+    if (ss->save() != 0) {
+        QMessageBox::warning(this, tr("Save failed"), tr("The server profile could not be saved."));
+        return;
+    }
 
     accept();
+    if (connect_after_save) emit connect();
 }

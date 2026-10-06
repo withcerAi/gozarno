@@ -26,6 +26,8 @@
 #include "gtdb.h"
 #include "logger.h"
 #include "server_storage.h"
+#include "client/VpnRoutes.h"
+#include "client/AppRouter.h"
 
 #include <QDir>
 #include <QHash>
@@ -424,7 +426,19 @@ static void setup_tun_vfn(void* privdata)
                                            interface_name.constData());
     if (ret != 0) {
         vpn->last_err = QObject::tr("Error setting up the TUN device");
-        //FIXME: ???        return ret;
+        vpn->clientFailure = true;
+        return;
+    }
+
+    const char* actualName = openconnect_get_ifname(vpn->vpninfo);
+    if (!vpn->applyTraffic(actualName ? QString::fromUtf8(actualName) : QString::fromUtf8(interface_name))) {
+        vpn->clientFailure = true;
+        const char cancel = OC_CMD_CANCEL;
+#ifdef _WIN32
+        send(vpn->get_cmd_fd(), &cancel, 1, 0);
+#else
+        write(vpn->get_cmd_fd(), &cancel, 1);
+#endif
     }
 
     vpn->logVpncScriptOutput();
@@ -488,6 +502,8 @@ VpnInfo::VpnInfo(QString name, StoredServer* ss, MainWindow* m)
 
 VpnInfo::~VpnInfo()
 {
+    if (appRouter) appRouter->stop();
+    if (routes) routes->restore();
     if (vpninfo != nullptr) {
         openconnect_vpninfo_free(vpninfo);
     }
@@ -511,6 +527,17 @@ int VpnInfo::connect()
     int ret;
     QString cert_file, key_file;
     QString ca_file;
+
+    if (!routesPrepared) {
+        QString error;
+        trafficPolicy = TrafficPolicy::load(ss->get_label(), &error);
+        if (!error.isEmpty() || !AppRouter::preflight(trafficPolicy, error)) {
+            last_err = error; clientFailure = true; return -1;
+        }
+        routes.reset(new VpnRoutes(trafficPolicy));
+        if (!routes->prepare(mUrl.host(), error)) { last_err = error; clientFailure = true; return -1; }
+        routesPrepared = true;
+    }
 
     //disable DTLS early on if specified on profile
     if (this->ss->get_disable_udp() == true) {
@@ -581,7 +608,29 @@ int VpnInfo::connect()
         }
     }
 
+    // Configure the local adapter and policies before reporting Connected.
+    setup_tun_vfn(this);
+    if (clientFailure) return -1;
     return 0;
+}
+
+bool VpnInfo::applyTraffic(const QString& interfaceName)
+{
+    QString error;
+    const struct oc_ip_info* info = nullptr;
+    QStringList dns;
+    if (openconnect_get_ip_info(vpninfo, &info, nullptr, nullptr) == 0 && info)
+        for (const auto* item : info->dns) if (item) dns.append(QString::fromUtf8(item));
+    if (!routes->apply(interfaceName, dns, error)) { last_err = error; return false; }
+    appRouter.reset(new AppRouter);
+    if (!appRouter->start(trafficPolicy, *routes, error, [window = m]() {
+        QMetaObject::invokeMethod(window, [window]() {
+            window->on_disconnectClicked();
+            emit window->client_error_sig(QObject::tr("The application routing component stopped. The VPN has been disconnected."));
+        }, Qt::QueuedConnection);
+    })) { last_err = error; return false; }
+    emit m->tunnel_ready_sig(interfaceName);
+    return true;
 }
 
 void VpnInfo::mainloop()
@@ -600,9 +649,9 @@ void VpnInfo::mainloop()
 
 void VpnInfo::get_info(QString& dns, QString& ip, QString& ip6)
 {
-    const struct oc_ip_info* info;
+    const struct oc_ip_info* info=nullptr;
     int ret = openconnect_get_ip_info(this->vpninfo, &info, nullptr, nullptr);
-    if (ret == 0) {
+    if (ret == 0 && info) {
         if (info->addr) {
             ip = info->addr;
             if (info->netmask) {
@@ -618,15 +667,9 @@ void VpnInfo::get_info(QString& dns, QString& ip, QString& ip6)
             }
         }
 
-        dns = info->dns[0];
-        if (info->dns[1]) {
-            dns += ", ";
-            dns += info->dns[1];
-        }
-        if (info->dns[2]) {
-            dns += " ";
-            dns += info->dns[2];
-        }
+        QStringList servers;
+        for(const auto* address:info->dns) if(address) servers.append(QString::fromUtf8(address));
+        dns=servers.join(", ");
     }
     return;
 }
@@ -713,9 +756,9 @@ void VpnInfo::logVpncScriptOutput()
 QByteArray VpnInfo::generateUniqueInterfaceName()
 {
     //generate a hash from server_gateway (as input) and username
-    size_t uhash = qHash(this->ss->get_server_gateway() + this->ss->get_username(), 0);
+    size_t uhash = qHash(QStringLiteral("GozarnoVPN:") + this->ss->get_server_gateway() + this->ss->get_username(), 0);
     QString hash = QString::number(uhash, 16);
-    QString host = mUrl.host();
+    QString host = QStringLiteral("gozarno");
 
 #ifdef _WIN32
     /* Reduce host so the total length (host + underscore + hash) fits in openconnect's buffer size */

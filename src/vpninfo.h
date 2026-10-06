@@ -22,9 +22,13 @@
 #include <QString>
 #include <QUrl>
 #include "common.h"
+#include "client/TrafficPolicy.h"
+#include <memory>
 
 class MainWindow;
 class StoredServer;
+class VpnRoutes;
+class AppRouter;
 
 class VpnInfo {
 public:
@@ -41,6 +45,8 @@ public:
     bool get_minimize() const;
     bool is_username_form_option(struct oc_auth_form* form, struct oc_form_opt* opt);
     bool is_password_form_option(struct oc_auth_form* form, struct oc_form_opt* opt);
+    bool applyTraffic(const QString& interfaceName);
+    bool clientFailure = false;
 
     QString last_err;
     QUrl mUrl;
@@ -57,4 +63,8 @@ public:
 
 private:
     SOCKET cmd_fd;
+    TrafficPolicy trafficPolicy;
+    std::unique_ptr<VpnRoutes> routes;
+    std::unique_ptr<AppRouter> appRouter;
+    bool routesPrepared = false;
 };

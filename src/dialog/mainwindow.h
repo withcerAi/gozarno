@@ -21,6 +21,7 @@
 
 #include "common.h"
 #include "OcSettings.h"
+#include "client/ConnectionState.h"
 
 #include <QCoreApplication>
 #include <QFutureWatcher>
@@ -31,6 +32,7 @@
 #include <QTimer>
 #include <QNetworkReply>
 #include <QProgressDialog>
+#include <memory>
 
 #ifndef _WIN32
 #include <cerrno>
@@ -46,16 +48,14 @@ extern "C" {
 
 class LogDialog;
 class QStateMachine;
+class ServerLibrary;
+class GamingMode;
+class QPushButton;
+class SessionActivity;
 
 namespace Ui {
 class MainWindow;
 }
-enum status_t {
-    STATUS_DISCONNECTING,
-    STATUS_DISCONNECTED,
-    STATUS_CONNECTING,
-    STATUS_CONNECTED
-};
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -103,11 +103,15 @@ public slots:
     void on_actionWebSite_triggered();
 
 signals:
+    void session_info_sig(QString,QString,QString,QString,QString);
+    void traffic_totals_sig(quint64,quint64);
     void stats_changed_sig(QString, QString, QString);
     void vpn_status_changed_sig(int);
     void timeout(void);
     void readyToShutdown();
     void version_download_completed_sig();
+    void client_error_sig(QString message);
+    void tunnel_ready_sig(QString interfaceName);
 
 private slots:
     void createLogDialog();
@@ -115,6 +119,15 @@ private slots:
     void checkForUpdatesDialog();
 
 private:
+    // Client interface changes, 2026-10-06.
+    void setupClientInterface();
+    void buildClientShell();
+    void applyClientTheme(bool dark);
+    ServerLibrary* serverLibrary = nullptr;
+    SessionActivity* sessionActivity = nullptr;
+    std::unique_ptr<GamingMode> gamingMode;
+    QPushButton* gamingButton = nullptr;
+    QString activeInterface;
     void gotLatestVersion(QNetworkReply *reply);
     void checkLatestVersion() const;
 

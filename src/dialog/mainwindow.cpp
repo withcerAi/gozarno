@@ -18,6 +18,9 @@
  */
 
 #include "mainwindow.h"
+#include "SessionActivity.h"
+#include "AboutDialog.h"
+#include "client/ClientLanguage.h"
 #include "NewProfileDialog.h"
 #include "config.h"
 #include "editdialog.h"
@@ -28,6 +31,13 @@
 #include "ui_mainwindow.h"
 #include "vpninfo.h"
 #include "logger.h"
+#include "ServerLibrary.h"
+#include "TrafficPolicyDialog.h"
+#include "client/GamingMode.h"
+#include "client/AppRouter.h"
+#include <QSpinBox>
+#include <QSignalBlocker>
+#include <QFileDialog>
 
 extern "C" {
 #include <gnutls/gnutls.h>
@@ -56,6 +66,11 @@ extern "C" {
 #include <QNetworkReply>
 #include <QNetworkAccessManager>
 #include <QProgressDialog>
+#include <QCheckBox>
+#include <QComboBox>
+#include <QFormLayout>
+#include <QVBoxLayout>
+#include <QLabel>
 
 #include <cmath>
 #include <cstdarg>
@@ -98,6 +113,9 @@ MainWindow::MainWindow(QWidget* parent, bool useTray, const QString profileName)
     , ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
+    connect(this, &MainWindow::client_error_sig, this, [this](const QString& message) {
+        QMessageBox::warning(this, tr("Client configuration"), message);
+    }, Qt::QueuedConnection);
 
     connect(ui->viewLogButton, &QPushButton::clicked,
         this, &MainWindow::createLogDialog);
@@ -111,10 +129,10 @@ MainWindow::MainWindow(QWidget* parent, bool useTray, const QString profileName)
 
     connect(ui->actionQuit, &QAction::triggered,
         [=]() {
-            if (m_trayIcon && m_disconnectAction->isEnabled()) {
-                connect(this, &MainWindow::readyToShutdown,
-                    qApp, &QApplication::quit);
-                on_disconnectClicked();
+            if (futureWatcher.isRunning()) {
+                connect(&futureWatcher, &QFutureWatcher<void>::finished,
+                    qApp, &QApplication::quit, Qt::UniqueConnection);
+                if(cmd_fd != INVALID_SOCKET) on_disconnectClicked();
             } else {
                 qApp->quit();
             }
@@ -151,7 +169,7 @@ MainWindow::MainWindow(QWidget* parent, bool useTray, const QString profileName)
 
         QFileSelector selector;
         QIcon icon(selector.select(QStringLiteral(":/images/network-disconnected.png")));
-        icon.setIsMask(true);
+        icon.setIsMask(false);
         m_trayIcon->setIcon(icon);
         m_trayIcon->show();
     } else {
@@ -252,6 +270,7 @@ MainWindow::MainWindow(QWidget* parent, bool useTray, const QString profileName)
     ui->serverListControl->setMenu(serverProfilesMenu);
 
     readSettings();
+    setupClientInterface();
     // TODO: initial app window state machine
     m_appWindowStateMachine = new QStateMachine(this);
 
@@ -264,13 +283,13 @@ MainWindow::MainWindow(QWidget* parent, bool useTray, const QString profileName)
     m_appWindowStateMachine->addState(s112_minimizedWindow);
     connect(s112_minimizedWindow, &QState::entered, [=]() {
         showMinimized();
-        if (ui->actionMinimizeToTheNotificationArea->isChecked()) {
+        if (m_trayIcon && ui->actionMinimizeToTheNotificationArea->isChecked()) {
             QTimer::singleShot(10, this, SLOT(hide()));
         }
     });
     connect(s112_minimizedWindow, &QState::exited, [=]() {
         this->showNormal();
-        if (ui->actionMinimizeToTheNotificationArea->isChecked()) {
+        if (m_trayIcon && ui->actionMinimizeToTheNotificationArea->isChecked()) {
             show();
             raise();
             activateWindow();
@@ -348,8 +367,9 @@ MainWindow::MainWindow(QWidget* parent, bool useTray, const QString profileName)
     restoreEvent->setTargetState(s111_normalWindow);
     s112_minimizedWindow->addTransition(restoreEvent);
 
-    // start timer to check latest version
-    QTimer::singleShot(4000, this, &MainWindow::tryCheckLatestVersion);
+    // This fork must never offer the upstream installer as its own update.
+    ui->actionCheckForUpdates->setEnabled(false);
+    ui->actionCheckForUpdates->setToolTip(tr("Gozarno updates are distributed through its own installer."));
 
     m_appWindowStateMachine->start();
 }
@@ -365,7 +385,6 @@ static void term_thread(MainWindow* m, SOCKET* fd)
             Logger::instance().addMessage(QObject::tr("term_thread: IPC error: %1").arg(net_errno));
         }
         *fd = INVALID_SOCKET;
-        ms_sleep(200);
     } else {
         m->vpn_status_changed(STATUS_DISCONNECTED);
     }
@@ -373,6 +392,7 @@ static void term_thread(MainWindow* m, SOCKET* fd)
 
 MainWindow::~MainWindow()
 {
+    if (gamingMode) gamingMode->disable();
     int counter = 10;
     if (this->timer->isActive()) {
         timer->stop();
@@ -461,11 +481,7 @@ void MainWindow::vpn_status_changed(int connected)
 
 void MainWindow::vpn_status_changed(int connected, QString& dns, QString& ip, QString& ip6, QString& cstp_cipher, QString& dtls_cipher)
 {
-    this->dns = dns;
-    this->ip = ip;
-    this->ip6 = ip6;
-    this->dtls_cipher = dtls_cipher;
-    this->cstp_cipher = cstp_cipher;
+    emit session_info_sig(dns,ip,ip6,cstp_cipher,dtls_cipher);
 
     emit vpn_status_changed_sig(connected);
 }
@@ -486,10 +502,13 @@ void MainWindow::statsChanged(QString tx, QString rx, QString dtls)
     ui->downloadLabel->setText(rx);
     ui->uploadLabel->setText(tx);
     ui->cipherDTLSLabel->setText(dtls);
+    if(sessionActivity) sessionActivity->setSessionInfo(dns,ip,ip6,cstp_cipher,dtls);
 }
 
 void MainWindow::updateStats(const struct oc_stats* stats, QString dtls)
 {
+    if(!stats) return;
+    emit traffic_totals_sig(stats->tx_bytes,stats->rx_bytes);
     emit stats_changed_sig(
         normalize_byte_size(stats->tx_bytes),
         normalize_byte_size(stats->rx_bytes),
@@ -499,6 +518,7 @@ void MainWindow::updateStats(const struct oc_stats* stats, QString dtls)
 #define PREFIX "server:" // LCA: remove this...
 void MainWindow::reload_settings()
 {
+    const QString previousProfile=ui->serverList->currentText();
     ui->serverList->clear();
     if (m_trayIcon) {
         m_trayIconMenuConnections->clear();
@@ -524,6 +544,11 @@ void MainWindow::reload_settings()
             }
         }
     }
+    if(ui->serverList->count()>0) {
+        const int previousIndex=ui->serverList->findText(previousProfile);
+        ui->serverList->setCurrentIndex(previousIndex>=0 ? previousIndex : 0);
+    }
+    if (serverLibrary) serverLibrary->refresh();
 }
 
 void MainWindow::blink_ui()
@@ -558,7 +583,7 @@ void MainWindow::changeStatus(int val)
         QFileSelector selector;
         if (m_trayIcon) {
             QIcon icon(selector.select(QStringLiteral(":/images/network-connected.png")));
-            icon.setIsMask(true);
+            icon.setIsMask(false);
             m_trayIcon->setIcon(icon);
         }
 
@@ -569,11 +594,12 @@ void MainWindow::changeStatus(int val)
         this->ui->cipherDTLSLabel->setText(dtls_cipher);
 
         timer->start(UPDATE_TIMER);
+        request_update_stats();
 
         if (this->minimize_on_connect) {
             if (m_trayIcon) {
                 hide();
-                m_trayIcon->showMessage(QLatin1String("Connected"), QLatin1String("You are connected to ") + ui->serverList->currentText(),
+                m_trayIcon->showMessage(tr("Connected"), tr("You are connected to ") + ui->serverList->currentText(),
                     QSystemTrayIcon::Information,
                     10000);
             } else {
@@ -582,16 +608,16 @@ void MainWindow::changeStatus(int val)
         }
 
         if (m_trayIcon) {
-            m_trayIcon->setToolTip(QLatin1String("Connected to ") + ui->serverList->currentText());
+            m_trayIcon->setToolTip(tr("Connected to ") + ui->serverList->currentText());
         }
     } else if (val == STATUS_CONNECTING) {
 
         if (m_trayIcon) {
             QFileSelector selector;
-            QIcon icon(selector.select(QStringLiteral(":/images/network-disconnected.png")));
-            icon.setIsMask(true);
+            QIcon icon(selector.select(QStringLiteral(":/images/traffic_light_yellow.png")));
+            icon.setIsMask(false);
             m_trayIcon->setIcon(icon);
-            m_trayIcon->setToolTip(QLatin1String("Connecting to ") + ui->serverList->currentText());
+            m_trayIcon->setToolTip(tr("Connecting to ") + ui->serverList->currentText());
         }
 
         ui->serverList->setEnabled(false);
@@ -642,15 +668,15 @@ void MainWindow::changeStatus(int val)
         if (m_trayIcon) {
             QFileSelector selector;
             QIcon icon(selector.select(QStringLiteral(":/images/network-disconnected.png")));
-            icon.setIsMask(true);
+            icon.setIsMask(false);
             m_trayIcon->setIcon(icon);
 
             if (this->isHidden() == true)
-                m_trayIcon->showMessage(QLatin1String("Disconnected"), QLatin1String("You were disconnected from the VPN"),
+                m_trayIcon->showMessage(tr("Disconnected"), tr("You were disconnected from the VPN"),
                     QSystemTrayIcon::Warning,
                     10000);
 
-            m_trayIcon->setToolTip(QLatin1String("Disconnected"));
+            m_trayIcon->setToolTip(tr("Disconnected"));
         }
         disconnect(ui->connectionButton, &QPushButton::clicked,
             this, &MainWindow::on_disconnectClicked);
@@ -666,7 +692,7 @@ void MainWindow::changeStatus(int val)
         blink_timer->start(1500);
 
         if (m_trayIcon)
-            m_trayIcon->setToolTip(QLatin1String("Disconnecting from ") + ui->serverList->currentText());
+            m_trayIcon->setToolTip(tr("Disconnecting from ") + ui->serverList->currentText());
     } else {
         qDebug() << "TODO: was is das?";
     }
@@ -689,6 +715,11 @@ static void main_loop(VpnInfo* vpninfo, MainWindow* m)
         retry = false;
         ret = vpninfo->connect();
         if (ret != 0) {
+            if (vpninfo->clientFailure) {
+                Logger::instance().addMessage(vpninfo->last_err);
+                emit m->client_error_sig(vpninfo->last_err);
+                goto fail;
+            }
             if (retries-- <= 0)
                 goto fail;
 
@@ -724,13 +755,12 @@ static void main_loop(VpnInfo* vpninfo, MainWindow* m)
     vpninfo->get_cipher_info(cstp, dtls);
     m->vpn_status_changed(STATUS_CONNECTED, dns, ip, ip6, cstp, dtls);
 
-    vpninfo->ss->save();
+    if (vpninfo->ss->save() < 0) emit m->client_error_sig(vpninfo->ss->m_last_err);
     vpninfo->mainloop();
 
 fail: // LCA: drop this 'goto' and optimize values...
-    m->vpn_status_changed(STATUS_DISCONNECTED);
-
     delete vpninfo;
+    m->vpn_status_changed(STATUS_DISCONNECTED);
 }
 
 void MainWindow::on_disconnectClicked()
@@ -864,7 +894,7 @@ void MainWindow::on_connectClicked()
                     str += ":" + QString::number(proxies.at(0).port());
                 }
 
-                Logger::instance().addMessage(tr("Setting proxy to: %1").arg(str));
+                Logger::instance().addMessage(tr("Using system proxy %1:%2").arg(proxies.at(0).hostName()).arg(proxies.at(0).port()));
 
                 int ret = openconnect_set_http_proxy(vpninfo->vpninfo, str.toUtf8().data());
                 if (ret != 0) {
@@ -891,10 +921,10 @@ void MainWindow::closeEvent(QCloseEvent* event)
     } else {
         event->accept();
 
-        if (m_trayIcon && m_disconnectAction->isEnabled()) {
-            connect(this, &MainWindow::readyToShutdown,
-                qApp, &QApplication::quit);
-            on_disconnectClicked();
+        if (futureWatcher.isRunning()) {
+            connect(&futureWatcher, &QFutureWatcher<void>::finished,
+                qApp, &QApplication::quit, Qt::UniqueConnection);
+            if(cmd_fd != INVALID_SOCKET) on_disconnectClicked();
         } else {
             qApp->quit();
         }
@@ -917,6 +947,135 @@ void MainWindow::request_update_stats()
         if (this->timer->isActive())
             this->timer->stop();
     }
+}
+
+// Client interface changes, 2026-10-06. Network and authentication remain upstream.
+void MainWindow::setupClientInterface()
+{
+    gamingMode.reset(new GamingMode);
+    gamingButton = new QPushButton(tr("Gaming mode"), this);
+    gamingButton->setIcon(QIcon(QStringLiteral(":/images/gozarno/game.png")));
+    gamingButton->setCheckable(true); gamingButton->setEnabled(false);
+    gamingButton->setToolTip(tr("Use smaller tunnel packets for UDP traffic. Changes apply only to this VPN adapter and are restored when disabled or disconnected. Ping improvements depend on your server and internet route."));
+    ui->horizontalLayout_Buttons->addWidget(gamingButton);
+    connect(this, &MainWindow::tunnel_ready_sig, this, [this](const QString& name) { activeInterface = name; }, Qt::QueuedConnection);
+    connect(this, &MainWindow::vpn_status_changed_sig, this, [this](int status) {
+        gamingButton->setEnabled(status == STATUS_CONNECTED);
+        if (status != STATUS_CONNECTED && gamingMode->active()) {
+            QString error;
+            if (!gamingMode->disable(&error)) emit client_error_sig(error);
+            const QSignalBlocker blocker(gamingButton); gamingButton->setChecked(false);
+        }
+        if (status == STATUS_DISCONNECTED) activeInterface.clear();
+    });
+    connect(gamingButton, &QPushButton::toggled, this, [this](bool checked) {
+        QString error; OcSettings settings;
+        const bool ok = checked ? gamingMode->enable(activeInterface, settings.value("Client/gamingMtu", 1280).toUInt(), error)
+            : gamingMode->disable(&error);
+        if (!ok) { const QSignalBlocker blocker(gamingButton); gamingButton->setChecked(gamingMode->active()); emit client_error_sig(error); }
+    });
+    serverLibrary = new ServerLibrary(ui->tabWidget);
+    ui->tabWidget->addTab(serverLibrary, tr("Server library"));
+    connect(serverLibrary, &ServerLibrary::profilesChanged, this, &MainWindow::reload_settings);
+    connect(serverLibrary, &ServerLibrary::newProfile, this, &MainWindow::on_actionNewProfile_triggered);
+    connect(serverLibrary, &ServerLibrary::editProfile, this, [this](const QString& name) {
+        ui->serverList->setCurrentIndex(ui->serverList->findText(name));
+        on_actionEditSelectedProfile_triggered();
+    });
+    connect(serverLibrary, &ServerLibrary::connectProfile, this, [this](const QString& name) {
+        ui->serverList->setCurrentIndex(ui->serverList->findText(name));
+        ui->tabWidget->setCurrentIndex(0);
+        on_connectClicked();
+    });
+    connect(this, &MainWindow::vpn_status_changed_sig, serverLibrary, [this](int status) {
+        serverLibrary->setEnabled(status == STATUS_DISCONNECTED);
+    });
+    ui->tabWidget->setTabText(0, tr("Connection"));
+    ui->tabWidget->setTabText(1, tr("Connection details"));
+    ui->serverLabel->setText(tr("Profile:"));
+    ui->connectionButton->setMinimumHeight(44);
+    ui->serverList->setMinimumHeight(36);
+    ui->serverList->setToolTip(tr("Choose an existing profile or enter a VPN server address."));
+
+    auto* page = new QWidget(ui->tabWidget);
+    auto* layout = new QVBoxLayout(page);
+    layout->setContentsMargins(24, 24, 24, 24);
+    layout->setSpacing(18);
+    auto* title = new QLabel(tr("Client preferences"), page);
+    QFont titleFont = title->font();
+    titleFont.setPointSize(16);
+    titleFont.setBold(true);
+    title->setFont(titleFont);
+    layout->addWidget(title);
+
+    auto* form = new QFormLayout;
+    form->setSpacing(16);
+    auto* theme = new QComboBox(page);
+    theme->setObjectName("appearanceSelector");
+    theme->addItem(tr("Light"), false);
+    theme->addItem(tr("Dark"), true);
+    OcSettings settings;
+    const bool dark = settings.value("Client/darkTheme", true).toBool();
+    theme->setCurrentIndex(dark ? 1 : 0);
+    applyClientTheme(dark);
+    form->addRow(tr("Appearance"), theme);
+    auto* language=new QComboBox(page); language->setObjectName("languageSelector");
+    language->addItem(QStringLiteral("English"),"en"); language->addItem(QString::fromUtf8("فارسی"),"fa");
+    language->setCurrentIndex(settings.value("Client/language","en").toString()=="fa" ? 1 : 0);
+    form->addRow(tr("Language"),language);
+    connect(language,QOverload<int>::of(&QComboBox::currentIndexChanged),this,[this,language](int index) {
+        OcSettings stored; stored.setValue("Client/language",language->itemData(index).toString()); stored.sync();
+        if(stored.status()!=QSettings::NoError) { QMessageBox::warning(this,tr("Save failed"),tr("Could not save the language setting.")); return; }
+        QMessageBox::information(this,tr("Language saved"),tr("The language applies on the next launch. Choose Help & more → Quit, then reopen Gozarno. Changing this setting does not interrupt the current connection; saved server profiles are preserved."));
+    });
+    auto* gamingMtu = new QSpinBox(page);
+    ClientLanguage::technical(gamingMtu);
+    gamingMtu->setRange(1280, 1500); gamingMtu->setValue(settings.value("Client/gamingMtu", 1280).toInt());
+    form->addRow(tr("Gaming packet size"), gamingMtu);
+    connect(gamingMtu, QOverload<int>::of(&QSpinBox::valueChanged), this, [](int value) {
+        OcSettings settings; settings.setValue("Client/gamingMtu", value);
+    });
+    auto* engineButton = new QPushButton(tr("Check application routing setup"), page);
+    engineButton->setObjectName("engineCheckButton");
+    engineButton->setToolTip(tr("Check whether the local TCP and UDP routing prerequisites are available."));
+    form->addRow(tr("Application routing"), engineButton);
+    connect(engineButton, &QPushButton::clicked, this, [this]() {
+        TrafficPolicy check; check.rules.append({"application", "C:/Application.exe", "vpn", true});
+        QString error;
+        if (AppRouter::preflight(check,error)) QMessageBox::information(this,tr("Application routing"),tr("Local application routing prerequisites are available. Add program rules to a server's traffic policy."));
+        else QMessageBox::warning(this,tr("Setup required"),error);
+    });
+    connect(theme, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+        [this, theme](int index) {
+            const bool dark = theme->itemData(index).toBool();
+            applyClientTheme(dark);
+            OcSettings settings;
+            settings.setValue("Client/darkTheme", dark);
+        });
+
+    const auto addPreference = [this, page, form](const QString& label,
+                                   QAction* action, const QString& key) {
+        auto* checkbox = new QCheckBox(label, page);
+        checkbox->setFixedHeight(44);
+        checkbox->setChecked(action->isChecked());
+        connect(checkbox, &QCheckBox::toggled, action, &QAction::setChecked);
+        connect(action, &QAction::toggled, checkbox, &QCheckBox::setChecked);
+        connect(checkbox, &QCheckBox::toggled, this, [key](bool checked) {
+            OcSettings settings;
+            settings.setValue(key, checked);
+        });
+        form->addRow(checkbox);
+    };
+    addPreference(tr("Start minimized"), ui->actionStartMinimized,
+        QStringLiteral("Settings/startMinimized"));
+    addPreference(tr("Minimize to notification area"), ui->actionMinimizeToTheNotificationArea,
+        QStringLiteral("Settings/minimizeToTheNotificationArea"));
+    addPreference(tr("Minimize when closing the window"), ui->actionMinimizeTheApplicationInsteadOfClosing,
+        QStringLiteral("Settings/minimizeTheApplicationInsteadOfClosing"));
+    layout->addLayout(form);
+    layout->addStretch();
+    ui->tabWidget->addTab(page, tr("Preferences"));
+    buildClientShell();
 }
 
 void MainWindow::readSettings()
@@ -1026,7 +1185,7 @@ void MainWindow::createTrayIcon()
 
     m_trayIcon = new QSystemTrayIcon(this);
     m_trayIcon->setContextMenu(m_trayIconMenu);
-    m_trayIcon->setToolTip(QLatin1String("Disconnected"));
+    m_trayIcon->setToolTip(tr("Disconnected"));
 }
 
 void MainWindow::iconActivated(QSystemTrayIcon::ActivationReason reason)
@@ -1110,20 +1269,7 @@ void MainWindow::on_actionRemoveSelectedProfile_triggered()
 
 void MainWindow::on_actionAbout_triggered()
 {
-    QString txt = QLatin1String("<h2>") + QLatin1String(PRODUCT_NAME_LONG) + QLatin1String("</h2>");
-
-    if (QLatin1String(PROJECT_VERSION).contains(QLatin1String("-g"))) {
-        txt += tr("Development snapshot <i>%1</i> (%2 bit)<br>").arg(PROJECT_VERSION).arg(QSysInfo::buildCpuArchitecture() == QLatin1String("i386") ? 32 : 64);
-        txt += tr("Built at <i>%1</i><br>").arg(QLatin1String(appBuildOn));
-    } else {
-        txt += tr("Version <i>%1</i> (%2 bit)<br>").arg(PROJECT_VERSION).arg(QSysInfo::buildCpuArchitecture() == QLatin1String("i386") ? 32 : 64);
-    }
-
-    txt += tr("<br><i>%1</i> is free software developed by the OpenConnect GUI project community. See the license for more information.<br>").arg(APP_NAME);
-
-    txt += tr("<br>Visit <a href=\"%1\">our community web site</a> for more information, to contribute, file a bug or suggest a new feature.<br>").arg(CMAKE_PROJECT_HOMEPAGE_URL);
-
-    QMessageBox::about(this, QLatin1String("About"), txt);
+    AboutDialog dialog(this); dialog.exec();
 }
 
 void MainWindow::checkForUpdatesDialog()
@@ -1142,7 +1288,7 @@ void MainWindow::checkForUpdatesDialog()
     QUrl getUri;
     mbox.setStandardButtons(QMessageBox::Ok);
     mbox.setDefaultButton(QMessageBox::Ok);
-    QString txt = QLatin1String("<h2>") + QLatin1String(PRODUCT_NAME_LONG) + QLatin1String("</h2>");
+    QString txt = QLatin1String("<h2>") + QString::fromUtf8(PRODUCT_NAME_LONG) + QLatin1String("</h2>");
 
     txt += tr("<h3>Current version</h3>");
     if (QLatin1String(PROJECT_VERSION).contains(QLatin1String("-g"))) {
@@ -1171,7 +1317,7 @@ void MainWindow::checkForUpdatesDialog()
     }
 
     mbox.setInformativeText(txt);
-    mbox.setWindowTitle(QLatin1String("Check for updates"));
+    mbox.setWindowTitle(tr("Check for updates"));
 
     if (mbox.exec() == QMessageBox::Ok) {
         return;
@@ -1209,7 +1355,7 @@ void MainWindow::on_actionCheckForUpdates_triggered()
 
 void MainWindow::on_actionLicense_triggered()
 {
-    QString txt = QLatin1String("<h2>") + QLatin1String(PRODUCT_NAME_LONG) + QLatin1String("</h2>");
+    QString txt = QLatin1String("<h2>") + QString::fromUtf8(PRODUCT_NAME_LONG) + QLatin1String("</h2>");
 
     txt += tr("<br><br>Based on");
     txt += tr("<br>- <a href=\"https://www.infradead.org/openconnect\">OpenConnect</a> ") + QLatin1String(openconnect_get_version());
@@ -1223,7 +1369,7 @@ void MainWindow::on_actionLicense_triggered()
               "of the GNU General Public License version 2.<br>")
                .arg(APP_NAME);
 
-    QMessageBox::information(this, QLatin1String("License"), txt);
+    QMessageBox::information(this, tr("License"), txt);
 }
 
 void MainWindow::on_actionWebSite_triggered()

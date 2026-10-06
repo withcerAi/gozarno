@@ -29,6 +29,7 @@ StoredServer::~StoredServer(void)
 
 StoredServer::StoredServer()
     : m_batch_mode{ false }
+    , m_remember_password{ false }
     , m_minimize_on_connect{ false }
     , m_proxy{ false }
     , m_disable_udp{ false }
@@ -179,6 +180,7 @@ int StoredServer::load(QString& name)
 
     this->m_username = settings.value("username").toString();
     this->m_batch_mode = settings.value("batch", false).toBool();
+    this->m_remember_password = settings.value("remember-password", m_batch_mode).toBool();
     this->m_proxy = settings.value("proxy", false).toBool();
     this->m_disable_udp = settings.value("disable-udp", false).toBool();
     this->m_minimize_on_connect = settings.value("minimize-on-connect", false).toBool();
@@ -187,8 +189,8 @@ int StoredServer::load(QString& name)
 
     bool ret = false;
 
-    if (this->m_batch_mode == true) {
-        this->m_groupname = settings.value("groupname").toString();
+    this->m_groupname = settings.value("groupname").toString();
+    if (this->m_remember_password) {
         ret = CryptData::decode(this->m_server_gateway,
             settings.value("password").toByteArray(),
             this->m_password);
@@ -258,6 +260,15 @@ int StoredServer::load(QString& name)
 
 int StoredServer::save()
 {
+    // Never replace a stored password with plaintext or silently discard it.
+    QByteArray encodedPassword;
+    if (m_remember_password && !m_password.isEmpty()) {
+        encodedPassword = CryptData::encode(m_server_gateway, m_password);
+        if (encodedPassword.isEmpty()) {
+            m_last_err = QObject::tr("Unable to protect the password. The profile was not saved.");
+            return -1;
+        }
+    }
     OcSettings settings;
     settings.beginGroup(PREFIX + this->m_label);
     settings.setValue("server", this->m_server_gateway);
@@ -268,12 +279,12 @@ int StoredServer::save()
     settings.setValue("reconnect-timeout", this->m_reconnect_timeout);
     settings.setValue("dtls_attempt_period", this->m_dtls_attempt_period);
     settings.setValue("username", this->m_username);
-
-    if (this->m_batch_mode == true) {
-        settings.setValue("password",
-            CryptData::encode(this->m_server_gateway, this->m_password));
-        settings.setValue("groupname", this->m_groupname);
-    }
+    settings.setValue("remember-password", m_remember_password);
+    settings.setValue("groupname", m_groupname);
+    if (m_remember_password)
+        settings.setValue("password", encodedPassword);
+    else
+        settings.remove("password");
 
     QByteArray data;
     this->m_ca_cert.data_export(data);
@@ -303,6 +314,11 @@ int StoredServer::save()
         settings.setValue("log-level", m_log_level);
 
     settings.endGroup();
+    settings.sync();
+    if (settings.status() != QSettings::NoError) {
+        m_last_err = QObject::tr("Unable to write the profile settings.");
+        return -1;
+    }
     return 0;
 }
 

@@ -80,7 +80,7 @@ QByteArray CryptData::encode(QString& txt, QString password)
 {
 
     if (lib_init == 0) {
-        return password.toUtf8();
+        return {}; // Fail closed; never write a secret as plaintext on Windows.
     }
 
     DATA_BLOB DataIn;
@@ -115,15 +115,17 @@ bool CryptData::decode(QString& txt, QByteArray _enc, QString& res)
 {
     res.clear();
 
-    if (lib_init == 0 || _enc.startsWith("xxxx") == false) {
+    if (_enc.startsWith("xxxx") == false) {
         res = QString::fromUtf8(_enc);
         return true;
     }
+    if (lib_init == 0)
+        return false;
 
     DATA_BLOB DataIn;
     QByteArray enc{ QByteArray::fromBase64(_enc.mid(4)) };
     DataIn.pbData = (BYTE*)enc.data();
-    DataIn.cbData = enc.size() + 1;
+    DataIn.cbData = enc.size();
 
     DATA_BLOB Entropy;
     QByteArray txtArray{ txt.toUtf8() };

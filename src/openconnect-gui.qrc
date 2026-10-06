@@ -1,20 +1,24 @@
 <RCC>
     <qresource prefix="">
-        <file>images/trashcan.png</file>
-        <file>images/text-editor.png</file>
-        <file>images/network-wired.png</file>
-        <file>images/edit-find.png</file>
-        <file>images/process-stop.png</file>
-        <file>images/traffic_light_green.png</file>
-        <file>images/traffic_light_red.png</file>
-        <file>images/traffic_light_yellow.png</file>
-        <file>images/traffic_light_off.png</file>
-        <file>images/network-connected.png</file>
-        <file>images/network-disconnected.png</file>
-        <file>images/+mac/network-connected.png</file>
-        <file>images/+mac/network-disconnected.png</file>
-        <file>images/profiles.png</file>
-        <file>images/text-new.png</file>
-        <file>Resources/mono_lock.png</file>
-    </qresource>
+        <file>translations/fa.json</file>
+        <file alias="images/trashcan.png">images/gozarno/trash.png</file>
+        <file alias="images/text-editor.png">images/gozarno/edit.png</file>
+        <file alias="images/network-wired.png">images/gozarno/connected.png</file>
+        <file alias="images/edit-find.png">images/gozarno/log.png</file>
+        <file alias="images/process-stop.png">images/gozarno/stop.png</file>
+        <file alias="images/traffic_light_green.png">images/gozarno/connected.png</file>
+        <file alias="images/traffic_light_red.png">images/gozarno/disconnected.png</file>
+        <file alias="images/traffic_light_yellow.png">images/gozarno/connecting.png</file>
+        <file alias="images/traffic_light_off.png">images/gozarno/idle.png</file>
+        <file alias="images/network-connected.png">images/gozarno/connected.png</file>
+        <file alias="images/network-disconnected.png">images/gozarno/disconnected.png</file>
+        <file alias="images/profiles.png">images/gozarno/servers.png</file>
+        <file alias="images/text-new.png">images/gozarno/plus.png</file>
+        <file alias="Resources/mono_lock.png">images/gozarno/app.png</file>
+        <file>images/gozarno/game.png</file>
+        <file>images/gozarno/check-on.png</file>
+    <file>images/gozarno/check-off.png</file>
+    <file>images/gozarno/check-disabled-on.png</file>
+    <file>images/gozarno/check-disabled-off.png</file>
+</qresource>
 </RCC>

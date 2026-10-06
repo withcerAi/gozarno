@@ -40,4 +40,5 @@ private:
 
     Ui::NewProfileDialog* ui;
     bool quick_connect;
+    bool connect_after_save = false;
 };

@@ -34,6 +34,9 @@ public:
 
     const QString& get_password() const;
     void set_password(const QString& password);
+    // Client credential preferences added 2026-10-06.
+    bool get_remember_password() const { return m_remember_password; }
+    void set_remember_password(bool value) { m_remember_password = value; }
 
     const QString& get_groupname() const;
     void set_groupname(const QString& groupname);
@@ -113,6 +116,7 @@ public:
 
 private:
     bool m_batch_mode;
+    bool m_remember_password;
     bool m_minimize_on_connect;
     bool m_proxy;
     bool m_disable_udp;

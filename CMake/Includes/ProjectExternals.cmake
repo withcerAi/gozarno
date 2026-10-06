@@ -38,7 +38,7 @@ endif()
 
 include(ProjectExternals_qt-solutions)
 if(MINGW)
-    if (NOT CMAKE_CROSSCOMPILING)
+    if (NOT CMAKE_CROSSCOMPILING AND NOT PROJ_USE_SYSTEM_OPENCONNECT)
         include(ProjectExternals_openconnect)
     endif()
     include(ProjectExternals_vpnc-scripts-win)

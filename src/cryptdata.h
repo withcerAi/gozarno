@@ -19,7 +19,8 @@
 
 #pragma once
 
-#include "common.h"
+#include <QString>
+#include <QByteArray>
 #include <QByteArray>
 #include <QString>
 

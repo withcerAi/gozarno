@@ -36,21 +36,27 @@ LogDialog::LogDialog(QWidget* parent)
     loadSettings();
     ui->listWidget->setSelectionMode(QAbstractItemView::ContiguousSelection);
 
-    for (const auto& msg : Logger::instance().getMessages()) {
+    const auto history=Logger::instance().getMessages();
+    for (const auto& msg : history.mid(qMax(qsizetype(0),history.size()-2000))) {
         append(msg);
+        lastKnownId=msg.id;
     }
 
     if (ui->checkBox_autoScroll->checkState() == Qt::Checked) {
         ui->listWidget->scrollToBottom();
     }
 
-    connect(&Logger::instance(), &Logger::newLogMessage,
-        this, &LogDialog::append, Qt::QueuedConnection);
-
-    m_timer->setSingleShot(true);
-    m_timer->setInterval(100);
-    connect(m_timer.get(), &QTimer::timeout,
-        ui->listWidget, &QListWidget::scrollToBottom);
+    m_timer->setInterval(250);
+    connect(m_timer.get(),&QTimer::timeout,this,[this] {
+        if(!isVisible()) return;
+        const auto messages=Logger::instance().getMessages(lastKnownId);
+        if(messages.isEmpty()) return;
+        ui->listWidget->setUpdatesEnabled(false);
+        for(const auto& message:messages.mid(qMax(qsizetype(0),messages.size()-2000))) { append(message); lastKnownId=message.id; }
+        if(ui->checkBox_autoScroll->isChecked()) ui->listWidget->scrollToBottom();
+        ui->listWidget->setUpdatesEnabled(true);
+    });
+    m_timer->start();
 }
 
 LogDialog::~LogDialog()
@@ -74,9 +80,7 @@ void LogDialog::append(const Logger::Message& message)
                                 .arg(dt.toString("yyyy-MM-dd hh:mm:ss"))
                                 .arg(QString::number((long long)message.threadId, 16), 4)
                                 .arg(message.text));
-    if (ui->checkBox_autoScroll->checkState() == Qt::Checked) {
-        m_timer->start();
-    }
+    while(ui->listWidget->count()>2000) delete ui->listWidget->takeItem(0);
 }
 
 void LogDialog::on_pushButtonClear_clicked()
@@ -142,9 +146,7 @@ void LogDialog::saveSettings()
 void LogDialog::on_checkBox_autoScroll_toggled(bool checked)
 {
     if (checked) {
-        m_timer->start();
-    } else {
-        m_timer->stop();
+        ui->listWidget->scrollToBottom();
     }
 }
 

@@ -7,7 +7,7 @@ if(APPLE)
 endif()
 
 project(openconnect-gui
-    VERSION 1.6.2
+    VERSION 1.2.0
     HOMEPAGE_URL https://gui.openconnect-vpn.net/
     LANGUAGES CXX
 )
@@ -15,21 +15,21 @@ project(openconnect-gui
 message(STATUS "Building ${PROJECT_NAME} v${PROJECT_VERSION} [cmake]")
 
 # The SHORT and COMPANY names affect the installation directory.
-set(PRODUCT_NAME_SHORT "OpenConnect-GUI")
-set(PRODUCT_NAME_COMPANY "OpenConnect-GUI Team")
-set(PRODUCT_NAME_COMPANY_DOMAIN "gui.openconnect-vpn.net")
+set(PRODUCT_NAME_SHORT "Gozarno VPN")
+set(PRODUCT_NAME_COMPANY "Gozarno")
+set(PRODUCT_NAME_COMPANY_DOMAIN "gozarno.local")
 set(INTERNAL_PROJECT_VERSION "${PROJECT_VERSION}")
 
 # The long name is used as the installer description
 # and About screen description.
-set(PRODUCT_NAME_LONG "OpenConnect VPN graphical client")
+set(PRODUCT_NAME_LONG "Gozarno VPN — Client-controlled connectivity")
 
 # Printed in the About screen
 set(PRODUCT_NAME_COPYRIGHT_SHORT "Copyright © 2016-2024 Red Hat Inc., Nikos Mavrogiannopoulos, Ľubomír Carik and others")
 set(PRODUCT_NAME_COPYRIGHT_FULL "Copyright © 2014-2015 Red Hat Inc.<br>Copyright © 2016-2024 Nikos Mavrogiannopoulos<br>Copyright © 2016-2024 Ľubomír Carik<br>Copyright © 2020-2024 David Woodhouse<br>Copyright © 2021-2024 Dimitri Papadopoulos Orfanos<br>Copyright © 2023-2024 Marios Paouris")
 
 # The application name / main window title / installer app name
-set(APP_NAME "OpenConnect VPN")
+set(APP_NAME "Gozarno VPN")
 # The URL for determining the latest release
 set(GITLAB_LATEST_RELEASE_URL "https://gitlab.com/api/v4/projects/12274423/releases/permalink/latest")
 # The URL for the latest release
@@ -45,6 +45,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/CMake/Includes/")
 set(SIGN_EXE "false" CACHE STRING "When set to true the executable will be signed")
 
 include(ProjectSettings)
+option(PROJ_USE_SYSTEM_OPENCONNECT "Use a locally installed OpenConnect SDK on Windows" OFF)
 include(ProjectDependencies)
 
 if(MINGW)

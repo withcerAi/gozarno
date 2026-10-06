@@ -1,4 +1,31 @@
-# OpenConnect GUI
+# Gozarno VPN
+
+Independent Windows client based on OpenConnect GUI, with a redesigned desktop
+interface, server library, optional Windows-encrypted credentials, local traffic
+rules and reversible tunnel MTU gaming mode. Existing provider servers require
+no updates. This build is a development preview.
+
+Gozarno is maintained in [withcerAi/gozarno](https://github.com/withcerAi/gozarno).
+It derives from [OpenConnect GUI](https://github.com/openconnect/openconnect-gui),
+whose current upstream development is hosted on
+[GitLab](https://gitlab.com/openconnect/openconnect-gui).
+Original authors' credits and the GPL license are retained.
+
+English is the default interface language; Persian with right-to-left layout is
+available in Settings. Windows x64 is the target of this fork's packaged builds.
+Source and build instructions are published alongside the client; generated
+packages belong in GitHub Releases, not the source repository.
+
+## Code signing status
+
+The current self-signed test package is not publicly trusted. Gozarno has not
+been accepted by SignPath Foundation and does not yet provide releases signed
+by that service. Private signing keys are never part of this repository.
+
+See [features, build and validation](docs/client-modernization.md),
+[UI review](docs/ui-review.md), and [third-party/source notices](docs/third-party.md).
+
+## Upstream OpenConnect GUI
 
 This is the development space of OpenConnect VPN graphical client (GUI).
 See the [OpenConnect VPN GUI web site](https://gui.openconnect-vpn.net/)

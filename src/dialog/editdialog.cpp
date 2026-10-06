@@ -22,10 +22,19 @@
 #include "common.h"
 #include "server_storage.h"
 #include "ui_editdialog.h"
+#include "client/ClientLanguage.h"
 #include <QFileDialog>
 #include <QItemSelectionModel>
 #include <QListWidget>
 #include <QMessageBox>
+#include <QCheckBox>
+#include <QLineEdit>
+#include <QAction>
+#include <OcSettings.h>
+#include <QUrl>
+#include <QScrollArea>
+#include <QPushButton>
+#include <QStyle>
 
 #ifdef USE_SYSTEM_KEYS
 extern "C" {
@@ -140,6 +149,24 @@ EditDialog::EditDialog(QString server, QWidget* parent)
     , ss(new StoredServer())
 {
     ui->setupUi(this);
+    for(const auto& name:{"gatewayEdit","usernameEdit","groupnameEdit","caCertEdit","serverCertHash","tokenEdit","caCertHash","interfaceNameEdit","vpncScriptEdit","userCertEdit","userCertHash","userKeyEdit"})
+        if(auto* field=findChild<QLineEdit*>(QString::fromLatin1(name))) ClientLanguage::technical(field);
+    ClientLanguage::technical(ui->protocolComboBox);
+    // Keep advanced profiles usable on smaller displays and at high DPI.
+    ui->verticalLayout->removeWidget(ui->buttonBox);
+    auto* contents = new QWidget(this);
+    contents->setLayout(ui->verticalLayout);
+    auto* scroll = new QScrollArea(this);
+    scroll->setWidgetResizable(true); scroll->setWidget(contents);
+    auto* outer = new QVBoxLayout(this);
+    outer->setContentsMargins(24,24,24,24); outer->setSpacing(18);
+    auto* heading=new QLabel(tr("Server settings"),this); heading->setProperty("role","pageTitle"); outer->addWidget(heading);
+    auto* hint=new QLabel(tr("Account, authentication and advanced connection options."),this); hint->setProperty("role","muted"); outer->addWidget(hint);
+    scroll->setFrameShape(QFrame::NoFrame);
+    ui->settingsProfileLayout->setVerticalSpacing(16);
+    ui->verticalLayout->setSpacing(20);
+    outer->addWidget(scroll); outer->addWidget(ui->buttonBox);
+    resize(760, 740);
 
 #ifdef _WIN32
     ui->interfaceNameEdit->setMaxLength(OC_IFNAME_MAX_LENGTH);
@@ -156,6 +183,30 @@ EditDialog::EditDialog(QString server, QWidget* parent)
 
     ss->set_window(this);
 
+    // Explicit saved credentials, independent of unattended/batch behavior.
+    passwordEdit = new QLineEdit(this);
+    ClientLanguage::technical(passwordEdit);
+    passwordEdit->setEchoMode(QLineEdit::Password);
+    passwordEdit->setText(ss->get_password());
+    passwordEdit->setPlaceholderText(tr("Enter a password, or leave empty to ask on connection"));
+    auto* showPassword = passwordEdit->addAction(tr("Show"), QLineEdit::TrailingPosition);
+    showPassword->setCheckable(true);
+    connect(showPassword, &QAction::toggled, this, [this, showPassword](bool visible) {
+        passwordEdit->setEchoMode(visible ? QLineEdit::Normal : QLineEdit::Password);
+        showPassword->setText(visible ? tr("Hide") : tr("Show"));
+    });
+    rememberPassword = new QCheckBox(tr("Save password on this device"), this);
+    rememberPassword->setChecked(ss->get_remember_password());
+#ifdef _WIN32
+    rememberPassword->setToolTip(tr("Protected by Windows for the current user account. One-time codes are not saved."));
+#else
+    rememberPassword->setChecked(false);
+    rememberPassword->setEnabled(false);
+    rememberPassword->setToolTip(tr("Secure password storage is currently available on Windows."));
+#endif
+    ui->settingsProfileLayout->insertRow(3, tr("Password"), passwordEdit);
+    ui->settingsProfileLayout->insertRow(4, rememberPassword);
+
     QString txt = ss->get_label();
     ui->nameEdit->setText(txt);
     if (txt.isEmpty() == true) {
@@ -167,6 +218,7 @@ EditDialog::EditDialog(QString server, QWidget* parent)
     ui->userCertHash->setText(ss->get_client_cert_pin());
     ui->caCertHash->setText(ss->get_ca_cert_pin());
     ui->batchModeBox->setChecked(ss->get_batch_mode());
+    ui->batchModeBox->setToolTip(tr("Use unattended authentication where supported. Saving a password is a separate preference."));
     ui->minimizeBox->setChecked(ss->get_minimize());
     ui->useProxyBox->setChecked(ss->get_proxy());
     ui->disableUdpBox->setChecked(ss->get_disable_udp());
@@ -194,6 +246,44 @@ EditDialog::EditDialog(QString server, QWidget* parent)
     QString hash;
     ss->get_server_pin(hash);
     ui->serverCertHash->setText(hash);
+
+    // Everyday account fields are separate from certificate and advanced settings.
+    auto* editorTabs=new QTabWidget(contents);
+    const auto makePage=[editorTabs](const QString& title) {
+        auto* page=new QWidget(editorTabs); auto* layout=new QVBoxLayout(page);
+        layout->setContentsMargins(12,22,12,12); layout->setSpacing(20);
+        editorTabs->addTab(page,title); return page;
+    };
+    auto* account=makePage(tr("Account")); auto* security=makePage(tr("Authentication")); auto* advanced=makePage(tr("Advanced"));
+    auto* accountForm=new QFormLayout; auto* securityForm=new QFormLayout; auto* advancedForm=new QFormLayout;
+    for(auto* form : {accountForm,securityForm,advancedForm}) { form->setSpacing(18); form->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow); }
+    qobject_cast<QVBoxLayout*>(account->layout())->addLayout(accountForm);
+    qobject_cast<QVBoxLayout*>(security->layout())->addLayout(securityForm);
+    qobject_cast<QVBoxLayout*>(advanced->layout())->addLayout(advancedForm);
+    while(ui->settingsProfileLayout->rowCount()>0) {
+        auto row=ui->settingsProfileLayout->takeRow(0);
+        auto* label=row.labelItem ? row.labelItem->widget() : nullptr;
+        auto* field=row.fieldItem ? row.fieldItem->widget() : nullptr;
+        auto* destination=(label==ui->nameLabel || label==ui->gatewayLabel || label==ui->usernameLabel || label==ui->groupnameLabel || label==ui->protocolLabel || field==passwordEdit || field==rememberPassword) ? accountForm
+            : (label==ui->interfaceNameLabel || label==ui->vpncScriptLabel || label==ui->logLevelLabel) ? advancedForm : securityForm;
+        if(row.fieldItem && row.fieldItem->layout()) {
+            auto* fields=row.fieldItem->layout(); fields->setParent(nullptr);
+            if(label) destination->addRow(label,fields); else destination->addRow(fields);
+        } else if(field) {
+            if(label) destination->addRow(label,field); else destination->addRow(field);
+            delete row.fieldItem;
+        }
+        delete row.labelItem;
+    }
+    ui->verticalLayout->removeWidget(ui->settingsTabWidget); ui->verticalLayout->removeWidget(ui->settingsGroupBox);
+    security->layout()->addWidget(ui->settingsTabWidget); advanced->layout()->addWidget(ui->settingsGroupBox);
+    qobject_cast<QVBoxLayout*>(account->layout())->addStretch();
+    qobject_cast<QVBoxLayout*>(advanced->layout())->addStretch();
+    delete ui->verticalLayout;
+    auto* contentLayout=new QVBoxLayout(contents); contentLayout->setContentsMargins(0,0,0,0); contentLayout->addWidget(editorTabs);
+    ui->buttonBox->button(QDialogButtonBox::Save)->setProperty("primary",true);
+    ui->buttonBox->button(QDialogButtonBox::Save)->style()->unpolish(ui->buttonBox->button(QDialogButtonBox::Save));
+    ui->buttonBox->button(QDialogButtonBox::Save)->style()->polish(ui->buttonBox->button(QDialogButtonBox::Save));
 }
 
 EditDialog::~EditDialog()
@@ -209,6 +299,22 @@ QString EditDialog::getEditedProfileName() const
 
 void EditDialog::on_buttonBox_accepted()
 {
+    const QString newName = ui->nameEdit->text().trimmed();
+    const QString oldName = ss->get_label();
+    OcSettings profileSettings;
+    if (newName.contains('/') || newName.contains('\\') || newName.size() > 128
+        || (newName != oldName && profileSettings.contains("server:" + newName + "/server"))) {
+        QMessageBox::warning(this, tr("Invalid profile name"),
+            tr("Use a unique name of at most 128 characters without slashes."));
+        return;
+    }
+    QString gatewayText = ui->gatewayEdit->text().trimmed();
+    QUrl gateway(gatewayText.contains("://") ? gatewayText : "https://" + gatewayText);
+    if (!gateway.isValid() || gateway.host().isEmpty() || gateway.scheme() != "https"
+        || !gateway.userInfo().isEmpty() || gateway.hasFragment()) {
+        QMessageBox::warning(this, tr("Invalid server"), tr("Enter an HTTPS gateway without embedded credentials."));
+        return;
+    }
     if (ui->gatewayEdit->text().isEmpty() == true) {
         QMessageBox::information(this,
             qApp->applicationName(),
@@ -266,9 +372,11 @@ void EditDialog::on_buttonBox_accepted()
             tr("There is a client certificate specified but no key!"));
         return;
     }
-    ss->set_label(ui->nameEdit->text());
+    ss->set_label(newName);
     ss->set_username(ui->usernameEdit->text());
-    ss->set_server_gateway(ui->gatewayEdit->text());
+    ss->set_password(passwordEdit->text());
+    ss->set_remember_password(rememberPassword->isChecked());
+    ss->set_server_gateway(gateway.toString());
     ss->set_batch_mode(ui->batchModeBox->isChecked());
     ss->set_minimize(ui->minimizeBox->isChecked());
     ss->set_proxy(ui->useProxyBox->isChecked());
@@ -295,7 +403,26 @@ void EditDialog::on_buttonBox_accepted()
     }
     ss->set_log_level(loglevel_rtab[type]);
 
-    ss->save();
+    if (ss->save() < 0) {
+        QMessageBox::warning(this, tr("Unable to save"), ss->m_last_err);
+        return;
+    }
+    if (oldName != newName && !oldName.isEmpty()) {
+        // Preserve client routing rules and metadata across renames.
+        profileSettings.beginGroup("server:" + oldName);
+        const auto keys = profileSettings.allKeys();
+        QMap<QString, QVariant> extras;
+        for (const auto& key : keys)
+            if (key.startsWith("routing/") || key.startsWith("catalog/"))
+                extras.insert(key, profileSettings.value(key));
+        profileSettings.endGroup();
+        profileSettings.beginGroup("server:" + newName);
+        for (auto it = extras.cbegin(); it != extras.cend(); ++it)
+            profileSettings.setValue(it.key(), it.value());
+        profileSettings.endGroup();
+        profileSettings.remove("server:" + oldName);
+        profileSettings.sync();
+    }
     this->accept();
 }
 

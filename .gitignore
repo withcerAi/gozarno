@@ -16,3 +16,6 @@ _xxx/
 *.zip
 *.exe
 *.exe.sha512
+/.tools/
+/dist/
+/installer/uninstall-files.nsh

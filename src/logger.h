@@ -4,6 +4,7 @@
 #include <QReadWriteLock>
 #include <QString>
 #include <QVector>
+#include <deque>
 
 class Logger : public QObject {
     Q_OBJECT
@@ -62,7 +63,7 @@ private:
 
     static Logger m_logger;
     int m_messageCounter;
-    QVector<Message> m_messages;
+    std::deque<Message> m_messages;
     mutable QReadWriteLock m_lock;
 };
 

@@ -58,4 +58,5 @@ private:
 
     Ui::LogDialog* ui;
     std::unique_ptr<QTimer> m_timer;
+    int lastKnownId=-1;
 };

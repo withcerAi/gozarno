@@ -30,7 +30,7 @@
 #define CONNECTING_ICON QPixmap(QString::fromLatin1(":/images/traffic_light_yellow.png"))
 #define CONNECTING_ICON2 QPixmap(QString::fromLatin1(":/images/traffic_light_off.png"))
 
-#define UPDATE_TIMER 10000
+#define UPDATE_TIMER 5000
 
 #ifdef _WIN32
 #define net_errno WSAGetLastError()

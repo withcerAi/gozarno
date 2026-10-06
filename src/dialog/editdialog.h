@@ -23,6 +23,8 @@
 
 class StoredServer;
 class OcSettings;
+class QLineEdit;
+class QCheckBox;
 
 namespace Ui {
 class EditDialog;
@@ -75,4 +77,6 @@ private:
     Ui::EditDialog* ui;
     std::vector<win_cert_st> winCerts;
     StoredServer* ss;
+    QLineEdit* passwordEdit;
+    QCheckBox* rememberPassword;
 };

@@ -20,6 +20,10 @@ set(${PROJECT_NAME}_SRCS
     dialog/logdialog.ui
     dialog/VpnProtocolModel.cpp
     dialog/mainwindow.cpp
+    dialog/ClientInterface.cpp
+    dialog/SessionActivity.cpp
+    dialog/AboutDialog.cpp
+    dialog/ComponentsWidget.cpp
     dialog/mainwindow.ui
     gtdb.cpp
     key.cpp
@@ -35,6 +39,17 @@ set(${PROJECT_NAME}_SRCS
 
     FileLogger.cpp
     OcSettings.h
+    client/ClientTheme.cpp
+    client/ClientLanguage.cpp
+    client/InstalledComponents.cpp
+    client/TrafficPolicy.cpp
+    client/ServerCatalog.cpp
+    client/VpnRoutes.cpp
+    client/SocksBridge.cpp
+    client/AppRouter.cpp
+    client/GamingMode.cpp
+    dialog/ServerLibrary.cpp
+    dialog/TrafficPolicyDialog.cpp
 )
 
 set_source_files_properties(
@@ -99,6 +114,13 @@ if(MINGW)
     target_link_libraries (${PROJECT_NAME}
         # system libraries
         wsock32
+        ws2_32
+        iphlpapi
+        advapi32
+        shell32
+        ole32
+        uuid
+        version
     )
 endif()
 
@@ -112,7 +134,7 @@ if(SIGN_EXE STREQUAL "true")
     )
 endif()
 
-if(WIN32 AND NOT CMAKE_CROSSCOMPILING)
+if(WIN32 AND NOT CMAKE_CROSSCOMPILING AND NOT PROJ_USE_SYSTEM_OPENCONNECT)
     add_dependencies(${PROJECT_NAME}
         openconnect-devel-${openconnect-TAG}
         openconnect-${openconnect-TAG}
@@ -158,7 +180,7 @@ endif()
 
 # common stuff to link...
 target_link_libraries (${PROJECT_NAME}
-    spdlog::spdlog
+    spdlog::spdlog_header_only
     qt-solutions::qtsingleapplication
 
     Qt6::Core
@@ -166,6 +188,7 @@ target_link_libraries (${PROJECT_NAME}
     Qt6::Widgets
     Qt6::Network
     Qt6::StateMachine
+    Qt6::Concurrent
 )
 
 if(UNIX)
