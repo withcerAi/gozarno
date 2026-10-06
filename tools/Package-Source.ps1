@@ -4,7 +4,10 @@ $destination=Join-Path $projectRoot 'dist/sources'
 New-Item -ItemType Directory -Force -Path $destination | Out-Null
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 function Write-SourceArchive([string]$Root,[string]$Archive) {
-    $files=& git -C $Root ls-files --cached --others --exclude-standard
+    # Only tracked source belongs in public archives. Including arbitrary
+    # untracked files can leak local configs, logs or generated build outputs.
+    # Read the working copy so tracked upstream patches are still included.
+    $files=& git -C $Root ls-files --cached
     if($LASTEXITCODE) { throw "Cannot inventory source: $Root" }
     $archivePath=Join-Path $destination $Archive
     $stream=[IO.File]::Open($archivePath,[IO.FileMode]::Create)

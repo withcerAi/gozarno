@@ -19,3 +19,13 @@ _xxx/
 /.tools/
 /dist/
 /installer/uninstall-files.nsh
+
+# Local credentials and exported signing keys must never be published.
+*.pfx
+*.p12
+*.key
+*.pem
+.env
+.env.local
+/.signing/
+/private/
