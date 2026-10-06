@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <QtTest>
+#include <cstring>
 #include <QTemporaryDir>
 #include <QJsonArray>
 #include "client/TrafficPolicy.h"
@@ -7,6 +8,8 @@
 #include "client/SocksBridge.h"
 #include "client/AppRouter.h"
 #include "client/GamingMode.h"
+#include "client/WindowsIpInterface.h"
+#include "client/ConnectionButtonIcon.h"
 #include "cryptdata.h"
 #include "OcSettings.h"
 #include "dialog/SessionActivity.h"
@@ -245,6 +248,42 @@ private slots:
         TrafficPolicy policy; policy.rules.append({"application", "C:\\Program Files\\Browser\\browser.exe", "vpn", true});
         QString error; QVERIFY(!AppRouter::preflight(policy, error)); QVERIFY(!error.isEmpty());
         policy.rules.clear(); QVERIFY(AppRouter::preflight(policy, error));
+    }
+    void connectionActionIconsAreVisibleAtDisplayScales() {
+        for (const auto action : {ConnectionButtonAction::Connect, ConnectionButtonAction::Disconnect, ConnectionButtonAction::Cancel}) {
+            const auto icon = connectionButtonIcon(action);
+            QVERIFY(!icon.isNull());
+            for (const auto mode : {QIcon::Normal, QIcon::Disabled}) {
+                for (const qreal scale : {1.0, 1.5, 2.0, 3.0}) {
+                    const auto pixmap = icon.pixmap(QSize(20,20),scale,mode);
+                    QVERIFY(!pixmap.isNull());
+                    const auto pixels = pixmap.toImage(); int ink = 0;
+                    for (int y=0; y<pixels.height(); ++y) for (int x=0; x<pixels.width(); ++x)
+                        if (qAlpha(pixels.pixel(x,y)) > 128) ++ink;
+                    QVERIFY(ink > pixels.width()*pixels.height()/10);
+                }
+            }
+        }
+    }
+    void gamingMtuWritePreservesInterfaceSettings() {
+#ifdef _WIN32
+        MIB_IPINTERFACE_ROW row{}; InitializeIpInterfaceEntry(&row);
+        row.Family = AF_INET; row.InterfaceLuid.Value = 123;
+        row.NlMtu = 1400; row.SitePrefixLength = 32;
+        row.Metric = 23; row.UseAutomaticMetric = FALSE;
+        row.DisableDefaultRoutes = TRUE;
+        auto expected = row; expected.NlMtu = 1280; expected.SitePrefixLength = 0;
+        const auto enabled = WindowsIpInterface::withMtu(row, 1280);
+        QVERIFY(std::memcmp(&enabled, &expected, sizeof(row)) == 0);
+        QCOMPARE(row.NlMtu, ULONG(1400)); // Input snapshot stays intact.
+        const auto restored = WindowsIpInterface::withMtu(enabled, 1400);
+        QCOMPARE(restored.NlMtu, ULONG(1400));
+        QCOMPARE(restored.SitePrefixLength, ULONG(0));
+        row.Family = AF_INET6; row.SitePrefixLength = 64;
+        expected = row; expected.NlMtu = 1280;
+        const auto ipv6 = WindowsIpInterface::withMtu(row, 1280);
+        QVERIFY(std::memcmp(&ipv6, &expected, sizeof(row)) == 0);
+#endif
     }
     void gamingRequiresAnActiveTunnel() {
         GamingMode mode; QString error;

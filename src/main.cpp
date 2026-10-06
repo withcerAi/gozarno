@@ -267,8 +267,6 @@ int main(int argc, char* argv[])
             if(parser.isSet("preview-sample")) {
                 tabs->setCurrentIndex(3); auto* sections=mainWindow.findChild<QTabWidget*>("settingsSections");
                 if(sections) { sections->setCurrentIndex(1); app.processEvents(); mainWindow.grab().save(previewDir+"/components.png"); sections->setCurrentIndex(0); }
-                tabs->setCurrentIndex(3); auto* sections=mainWindow.findChild<QTabWidget*>("settingsSections");
-                if(sections) { sections->setCurrentIndex(1); app.processEvents(); mainWindow.grab().save(previewDir+"/components.png"); sections->setCurrentIndex(0); }
                 AboutDialog about(&mainWindow); about.show(); app.processEvents(); about.grab().save(previewDir+"/about.png"); about.hide();
                 NewProfileDialog add(&mainWindow); add.show(); app.processEvents(); add.grab().save(previewDir+"/add-server.png"); add.hide();
                 TrafficPolicyDialog rules("Europe · Primary",&mainWindow); rules.show(); app.processEvents(); rules.grab().save(previewDir+"/traffic-rules.png"); rules.hide();

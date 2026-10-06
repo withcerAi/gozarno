@@ -26,7 +26,7 @@ Connected/reconnect/error flows still need a real provider session. Screen-reade
 all keyboard-only paths and 125/150/200-percent monitor scaling have not been
 fully qualified. English and Persian UI layouts are implemented and reviewed.
 
-## Gozarno 1.2.0 follow-up
+## Gozarno 1.2.1 follow-up
 
 - Replaced the old Activity form with real session totals, sampled rates, a
   60-sample graph, elapsed connection time, addresses and encryption details.
@@ -45,7 +45,7 @@ fully qualified. English and Persian UI layouts are implemented and reviewed.
 - Added an on-demand installed-component inventory; no service/driver changes
   or periodic background checks are made by that page.
 
-Validation: 20 QtTest passes, including Persian direction and mixed-text
+Validation: 22 QtTest passes, including Persian direction and mixed-text
 alignment, checkbox mouse/keyboard input, selection colors, Notes-column flags,
 real DPAPI migration, About Unicode, substitution fields, and component checks.
 `tools/Validate-Translations.ps1` verifies all extracted application strings and

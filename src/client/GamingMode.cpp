@@ -6,11 +6,7 @@
 #include <QJsonObject>
 #include <QObject>
 #ifdef _WIN32
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <windows.h>
-#include <iphlpapi.h>
-#include <netioapi.h>
+#include "WindowsIpInterface.h"
 #endif
 struct GamingMode::Impl {
     bool active = false;
@@ -67,7 +63,7 @@ bool GamingMode::enable(const QString& tunnelName, unsigned mtu, QString& error)
             error = QObject::tr("Cannot save gaming recovery information.");
             disable(); return false;
         }
-        row.NlMtu = next;
+        row = WindowsIpInterface::withMtu(row, next);
         const ULONG status = SetIpInterfaceEntry(&row);
         if (status != NO_ERROR) {
             error = QObject::tr("Cannot enable gaming mode (Windows error %1).").arg(status);
@@ -90,7 +86,7 @@ bool GamingMode::disable(QString* error)
         if (lookup == ERROR_NOT_FOUND || lookup == ERROR_FILE_NOT_FOUND) continue;
         if (lookup != NO_ERROR) { pending.append(change); continue; }
         if (row.NlMtu != change.after) continue; // A later administrator change takes precedence.
-        row.NlMtu = change.before;
+        row = WindowsIpInterface::withMtu(row, change.before);
         if (SetIpInterfaceEntry(&row) != NO_ERROR) pending.append(change);
     }
     impl->changes = pending; impl->journal();

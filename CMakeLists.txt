@@ -7,7 +7,7 @@ if(APPLE)
 endif()
 
 project(openconnect-gui
-    VERSION 1.2.0
+    VERSION 1.2.1
     HOMEPAGE_URL https://gui.openconnect-vpn.net/
     LANGUAGES CXX
 )

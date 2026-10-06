@@ -6,6 +6,7 @@
 #include "client/AppRouter.h"
 #include "client/ClientTheme.h"
 #include "client/ClientLanguage.h"
+#include "client/ConnectionButtonIcon.h"
 #include "ServerLibrary.h"
 #include "SessionActivity.h"
 #include "ComponentsWidget.h"
@@ -106,7 +107,10 @@ void MainWindow::buildClientShell()
     ui->serverList->setMinimumHeight(46); ui->serverListControl->setMinimumSize(44,46);
     ui->serverListControl->setToolTip(tr("Manage selected server"));
     ui->serverListControl->setIcon(navIcon(1));
-    ui->connectionButton->setMinimumHeight(52); ui->connectionButton->setIcon(QIcon()); connectionLayout->addWidget(ui->connectionButton);
+    ui->connectionButton->setMinimumHeight(52);
+    ui->connectionButton->setIconSize(QSize(20,20));
+    ui->connectionButton->setIcon(connectionButtonIcon(ConnectionButtonAction::Connect));
+    connectionLayout->addWidget(ui->connectionButton);
     auto* summaryCard = card(ui->tabWidget_main,summaryLayout); columns->addWidget(summaryCard,2);
     summaryLayout->addWidget(text(tr("CONNECTION OVERVIEW"),"eyebrow",summaryCard));
     auto* profileTitle = text(tr("No server selected"),"section",summaryCard); summaryLayout->addWidget(profileTitle);

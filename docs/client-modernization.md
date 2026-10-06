@@ -1,9 +1,13 @@
-# Gozarno VPN 1.2.0 — development preview
+# Gozarno VPN 1.2.1 — development preview
 
 Independent Windows x64 client based on OpenConnect GUI. All new features run
 on the user's device; existing provider servers require no updates or admin access.
 
 ## Included
+
+Version 1.2.1 corrects Windows IPv4 MTU writes (gaming mode error 87), including
+restoration on disable/disconnect, and supplies distinct high-DPI connection,
+disconnect and cancel button icons. Other interface settings are preserved.
 
 - Redesigned desktop shell: connection dashboard, server library, activity,
   settings, dark/light themes and visible keyboard focus.
@@ -30,7 +34,7 @@ on the user's device; existing provider servers require no updates or admin acce
 
 ## Install and use
 
-Run `GozarnoVPN-1.2.0-Setup-x64.exe` on Windows 10/11 x64. Administrator access
+Run `GozarnoVPN-1.2.1-Setup-x64.exe` on Windows 10/11 x64. Administrator access
 is required for tunnel/routing management. ARM64 is unsupported by this build.
 App routing requires .NET 4.7.2+, VC++ x64 runtime and Windows Packet Filter.
 Supported Windows normally includes .NET; Setup reports missing .NET and directs

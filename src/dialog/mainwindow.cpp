@@ -21,6 +21,7 @@
 #include "SessionActivity.h"
 #include "AboutDialog.h"
 #include "client/ClientLanguage.h"
+#include "client/ConnectionButtonIcon.h"
 #include "NewProfileDialog.h"
 #include "config.h"
 #include "editdialog.h"
@@ -577,7 +578,7 @@ void MainWindow::changeStatus(int val)
         }
 
         ui->iconLabel->setPixmap(ON_ICON);
-        ui->connectionButton->setIcon(QIcon(":/images/process-stop.png"));
+        ui->connectionButton->setIcon(connectionButtonIcon(ConnectionButtonAction::Disconnect));
         ui->connectionButton->setText(tr("Disconnect"));
 
         QFileSelector selector;
@@ -628,7 +629,7 @@ void MainWindow::changeStatus(int val)
         }
 
         ui->iconLabel->setPixmap(CONNECTING_ICON);
-        ui->connectionButton->setIcon(QIcon(":/images/process-stop.png"));
+        ui->connectionButton->setIcon(connectionButtonIcon(ConnectionButtonAction::Cancel));
         ui->connectionButton->setText(tr("Cancel"));
         blink_timer->start(1500);
 
@@ -662,7 +663,7 @@ void MainWindow::changeStatus(int val)
 
         ui->iconLabel->setPixmap(OFF_ICON);
         ui->connectionButton->setEnabled(true);
-        ui->connectionButton->setIcon(QIcon(":/images/network-wired.png"));
+        ui->connectionButton->setIcon(connectionButtonIcon(ConnectionButtonAction::Connect));
         ui->connectionButton->setText(tr("Connect"));
 
         if (m_trayIcon) {
@@ -687,7 +688,7 @@ void MainWindow::changeStatus(int val)
         emit readyToShutdown();
     } else if (val == STATUS_DISCONNECTING) {
         ui->iconLabel->setPixmap(CONNECTING_ICON);
-        ui->connectionButton->setIcon(QIcon(":/images/process-stop.png"));
+        ui->connectionButton->setIcon(connectionButtonIcon(ConnectionButtonAction::Disconnect));
         ui->connectionButton->setEnabled(false);
         blink_timer->start(1500);
 

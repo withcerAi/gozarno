@@ -6,7 +6,7 @@ Target amd64-unicode
 !include "x64.nsh"
 !include "WinVer.nsh"
 Name "Gozarno VPN"
-OutFile "..\dist\GozarnoVPN-1.2.0-Setup-x64.exe"
+OutFile "..\dist\GozarnoVPN-1.2.1-Setup-x64.exe"
 InstallDir "$PROGRAMFILES64\Gozarno VPN"
 InstallDirRegKey HKLM "Software\Gozarno\Installer" "InstallDir"
 RequestExecutionLevel admin
@@ -52,7 +52,7 @@ Section "Gozarno VPN (required)" Core
   CreateShortcut "$DESKTOP\Gozarno VPN.lnk" "$INSTDIR\GozarnoVPN.exe"
   WriteRegStr HKLM "Software\Gozarno\Installer" "InstallDir" "$INSTDIR"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\GozarnoVPN" "DisplayName" "Gozarno VPN"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\GozarnoVPN" "DisplayVersion" "1.2.0"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\GozarnoVPN" "DisplayVersion" "1.2.1"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\GozarnoVPN" "Publisher" "Gozarno"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\GozarnoVPN" "UninstallString" '$\"$INSTDIR\Uninstall.exe$\"'
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\GozarnoVPN" "DisplayIcon" "$INSTDIR\GozarnoVPN.exe"
