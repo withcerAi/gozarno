@@ -25,6 +25,12 @@ by that service. Private signing keys are never part of this repository.
 See [features, build and validation](docs/client-modernization.md),
 [UI review](docs/ui-review.md), and [third-party/source notices](docs/third-party.md).
 
+## English interface
+
+![Gozarno Windows client in English](docs/screenshots/gozarno-english.png)
+
+The screenshot uses fictional example profiles and shows the disconnected state.
+
 ## Upstream OpenConnect GUI
 
 This is the development space of OpenConnect VPN graphical client (GUI).
