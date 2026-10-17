@@ -1,3 +1,4 @@
+param([string]$Version = '1.4.1')
 $ErrorActionPreference='Stop'
 $projectRoot=Split-Path $PSScriptRoot -Parent
 $destination=Join-Path $projectRoot 'dist/sources'
@@ -19,7 +20,7 @@ function Write-SourceArchive([string]$Root,[string]$Archive) {
         }
     } finally { $zip.Dispose(); $stream.Dispose() }
 }
-Write-SourceArchive $projectRoot 'GozarnoVPN-1.2.1-source.zip'
+Write-SourceArchive $projectRoot "GozarnoVPN-$Version-source.zip"
 Write-SourceArchive (Join-Path $projectRoot '.tools/openconnect') 'OpenConnect-9.12-patched-source.zip'
 Write-SourceArchive (Join-Path $projectRoot '.tools/proxifyre-source') 'ProxiFyre-2.6.1-source.zip'
 Write-SourceArchive (Join-Path $projectRoot 'build-arovan/external/src/qt-solutions-master') 'QtSolutions-source.zip'

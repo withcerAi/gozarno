@@ -24,7 +24,7 @@ VS_VERSION_INFO VERSIONINFO
     FILEFLAGS 0x0L
 #endif
     FILEOS VOS__WINDOWS32
-    FILETYPE VFT_DLL
+    FILETYPE VFT_APP
     FILESUBTYPE 0x0L
     BEGIN
         BLOCK "StringFileInfo"
@@ -37,7 +37,7 @@ VS_VERSION_INFO VERSIONINFO
                 VALUE "LegalCopyright", "@PRODUCT_NAME_COPYRIGHT_SHORT@\0"
                 VALUE "OriginalFilename", "@PROJECT_NAME@.exe\0"
                 VALUE "ProductName", "@PRODUCT_NAME_SHORT@\0"
-                VALUE "ProductVersion", "@PROJECT_VERSION_MAJOR@.@PROJECT_VERSION_MINOR@\0"
+                VALUE "ProductVersion", "@PROJECT_VERSION_MAJOR@.@PROJECT_VERSION_MINOR@.@PROJECT_VERSION_PATCH@\0"
             END
         END
         BLOCK "VarFileInfo"

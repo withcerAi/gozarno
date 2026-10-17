@@ -1,5 +1,6 @@
 #include "client/ClientLanguage.h"
 #include "dialog/AboutDialog.h"
+
 /*
  * Copyright (C) 2014 Red Hat
  * Copyright (C) 2016 by Lubomír Carik <Lubomir.Carik@gmail.com>
@@ -38,6 +39,14 @@ extern "C" {
 #include <QMessageBox>
 #endif
 #include <QCommandLineParser>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QNetworkProxy>
+#include <QTcpServer>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QSaveFile>
 #include <OcSettings.h>
 #include <QtSingleApplication>
 #include <QTimer>
@@ -103,6 +112,7 @@ int pin_callback(void* userdata, int attempt, const char* token_url,
     const char* token_label, unsigned flags, char* pin,
     size_t pin_max)
 {
+    if (qApp->property("diagnosticMode").toBool()) return -1;
     QString type = QObject::tr("user");
     if (flags & GNUTLS_PIN_SO) {
         type = QObject::tr("security officer");
@@ -191,7 +201,10 @@ int main(int argc, char* argv[])
     parser.addOption({"preview-persian", QObject::tr("Preview the Persian interface")});
     parser.addOption({"preview-light", QObject::tr("Preview the light appearance")});
     parser.addOption({"preview-delay-ms", QObject::tr("Delay isolated preview capture"), "milliseconds", "500"});
+    parser.addOption({"preview-socks", QObject::tr("Preview isolated SOCKS mode")});
     parser.addOption({"preview-compact", QObject::tr("Preview at the minimum window size")});
+    parser.addOption({"validate-socks", QObject::tr("Validate only isolated SOCKS using the saved profile; write a sanitized report"), "report"});
+    parser.addOption({"validate-connection", QObject::tr("Test the selected saved profile and temporary protection; save a private-data-free report and exit"), "report"});
     parser.addOption({ { "s", "server" },
         QObject::tr("auto-connect to existing profile <name>"),
         QObject::tr("name")
@@ -201,12 +214,20 @@ int main(int argc, char* argv[])
     parser.process(app);
 
     const QString previewDir = parser.value("preview-dir");
+    const QString validationPath = parser.value("validate-connection");
+    const QString socksReportPath=parser.value("validate-socks");
+    app.setProperty("diagnosticMode",!validationPath.isEmpty() || !socksReportPath.isEmpty());
+    app.setProperty("socksValidation",!socksReportPath.isEmpty());
+    if(!socksReportPath.isEmpty()) {
+        QTcpServer reservation;reservation.listen(QHostAddress::LocalHost,0);
+        app.setProperty("socksValidationPort",int(reservation.serverPort()));
+    }
     if (!previewDir.isEmpty()) {
         QDir().mkpath(previewDir);
         QSettings::setDefaultFormat(QSettings::IniFormat);
         QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, previewDir + "/isolated-settings");
         haveTray = false;
-        OcSettings previewSettings; previewSettings.setValue("Client/language",parser.isSet("preview-persian") ? "fa" : "en");
+        OcSettings previewSettings; previewSettings.setValue("Client/proxyMode",parser.isSet("preview-socks")); previewSettings.setValue("Client/language",parser.isSet("preview-persian") ? "fa" : "en");
         ClientLanguage::apply(previewSettings.value("Client/language").toString());
         if(parser.isSet("preview-sample")) {
             OcSettings settings;
@@ -221,7 +242,7 @@ int main(int argc, char* argv[])
         }
     }
 
-    if(previewDir.isEmpty()) {
+    if(previewDir.isEmpty() && socksReportPath.isEmpty()) {
         if(!OcSettings::migrateLegacy()) QMessageBox::warning(nullptr,APP_NAME,QObject::tr("Could not copy previous settings. Your old profiles remain in Arovan; check settings storage permissions."));
     if (app.isRunning()) {
         OcSettings settings;
@@ -236,6 +257,7 @@ int main(int argc, char* argv[])
     auto fileLog=std::make_unique<FileLogger>(nullptr,previewDir.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)+"/logs" : previewDir+"/logs");
     Logger::instance().addMessage(QString("%1 (%2) logging started...").arg(app.applicationDisplayName(),app.applicationVersion()));
     const QString profileName{ parser.value(QLatin1String("server")) };
+    if (!validationPath.isEmpty() || !socksReportPath.isEmpty()) haveTray=false;
     MainWindow mainWindow(nullptr, haveTray, profileName);
     app.setActivationWindow(&mainWindow);
 #ifdef PROJ_PKCS11
@@ -248,6 +270,45 @@ int main(int argc, char* argv[])
 
     mainWindow.show();
     mainWindow.setWindowTitle(app.applicationDisplayName());
+    if(!socksReportPath.isEmpty()) {
+        auto report=std::make_shared<QJsonObject>();(*report)["connected"]=false;(*report)["http_ok"]=false;
+        const auto save=[report,socksReportPath] {QSaveFile file(socksReportPath);if(file.open(QIODevice::WriteOnly)){file.write(QJsonDocument(*report).toJson());file.commit();}};
+        QObject::connect(&mainWindow,&MainWindow::proxy_diagnostics_sig,&mainWindow,[report,save](QJsonObject metrics){(*report)["proxy_counters"]=metrics;save();});
+        QObject::connect(&app,&QCoreApplication::aboutToQuit,&mainWindow,save);
+        QObject::connect(&mainWindow,&MainWindow::connection_failure_sig,&mainWindow,[report,save](const QString& reason,int error){(*report)["failure"]=reason;(*report)["failure_code"]=error;save();});
+        auto* manager=new QNetworkAccessManager(&mainWindow);
+        manager->setProxy(QNetworkProxy(QNetworkProxy::Socks5Proxy,"127.0.0.1",quint16(app.property("socksValidationPort").toInt())));
+        QObject::connect(&mainWindow,&MainWindow::vpn_status_changed_sig,&mainWindow,[&,report,save,manager](int state){
+            if(state==STATUS_CONNECTED && !report->value("connected").toBool()) {
+                (*report)["connected"]=true;save();
+                QNetworkRequest request(QUrl("https://example.com/"));request.setTransferTimeout(20000);
+                auto* reply=manager->get(request);
+                QObject::connect(reply,&QNetworkReply::finished,&mainWindow,[&,reply,report,save]{
+                    (*report)["network_error"]=int(reply->error());(*report)["http_status"]=reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+                    (*report)["http_ok"]=reply->error()==QNetworkReply::NoError && reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt()==200;
+                    reply->readAll();reply->deleteLater();save();mainWindow.requestShutdown();
+                });
+            }
+            if(state==STATUS_DISCONNECTED && !report->value("connected").toBool()){save();mainWindow.requestShutdown();}
+        });
+        QTimer::singleShot(45000,&mainWindow,[&,report,save]{(*report)["timeout"]=true;save();mainWindow.requestShutdown();});
+        QTimer::singleShot(0,&mainWindow,&MainWindow::on_connectClicked);
+    }
+    if (!validationPath.isEmpty()) {
+        auto* servers=mainWindow.findChild<QComboBox*>("serverList");
+        if (!profileName.isEmpty() && servers) servers->setCurrentIndex(servers->findText(profileName));
+        QObject::connect(&mainWindow,&MainWindow::vpn_status_changed_sig,&mainWindow,[&](int state) {
+            if (state==STATUS_CONNECTED) QTimer::singleShot(1000,&mainWindow,&MainWindow::runProtectionChecks);
+        });
+        QObject::connect(&mainWindow,&MainWindow::protection_validation_finished_sig,&mainWindow,[&] {
+            mainWindow.writeDiagnosticReport(validationPath); mainWindow.requestShutdown();
+        });
+        QTimer::singleShot(90000,&mainWindow,[&] { mainWindow.writeDiagnosticReport(validationPath); mainWindow.requestShutdown(); });
+        QTimer::singleShot(0,&mainWindow,[&,servers] {
+            if(!servers || servers->currentIndex()<0) { mainWindow.writeDiagnosticReport(validationPath); mainWindow.requestShutdown(); }
+            else mainWindow.on_connectClicked();
+        });
+    }
     if (!previewDir.isEmpty()) {
         if(parser.isSet("preview-light")) mainWindow.findChild<QComboBox*>("appearanceSelector")->setCurrentIndex(0);
         if(parser.isSet("preview-compact")) mainWindow.resize(mainWindow.minimumSize());
@@ -258,6 +319,7 @@ int main(int argc, char* argv[])
                 QFile report(previewDir+"/layout-report.txt");
                 if(report.open(QIODevice::WriteOnly)) report.write(QString("Server count: %1\nSelected index: %2\nWindow: %3 x %4\n").arg(servers ? servers->count() : -1).arg(servers ? servers->currentIndex() : -1).arg(mainWindow.width()).arg(mainWindow.height()).toUtf8());
             }
+            if(parser.isSet("preview-socks"))emit mainWindow.proxy_ready_sig("127.0.0.1:1080 | 192.0.2.10:1080");
             auto* tabs = mainWindow.findChild<QTabWidget*>("pageStack");
             for (int i = 0; tabs && i < tabs->count(); ++i) {
                 tabs->setCurrentIndex(i);
@@ -266,11 +328,17 @@ int main(int argc, char* argv[])
             }
             if(parser.isSet("preview-sample")) {
                 tabs->setCurrentIndex(3); auto* sections=mainWindow.findChild<QTabWidget*>("settingsSections");
-                if(sections) { sections->setCurrentIndex(1); app.processEvents(); mainWindow.grab().save(previewDir+"/components.png"); sections->setCurrentIndex(0); }
+                if(sections) { for(int section=0;section<sections->count();++section) {sections->setCurrentIndex(section); app.processEvents(); mainWindow.grab().save(previewDir+QString("/settings-%1.png").arg(section));} sections->setCurrentIndex(0); }
                 AboutDialog about(&mainWindow); about.show(); app.processEvents(); about.grab().save(previewDir+"/about.png"); about.hide();
                 NewProfileDialog add(&mainWindow); add.show(); app.processEvents(); add.grab().save(previewDir+"/add-server.png"); add.hide();
                 TrafficPolicyDialog rules("Europe · Primary",&mainWindow); rules.show(); app.processEvents(); rules.grab().save(previewDir+"/traffic-rules.png"); rules.hide();
                 EditDialog edit("Europe · Primary",&mainWindow); edit.show(); app.processEvents(); edit.grab().save(previewDir+"/edit-server.png"); edit.hide();
+            }
+            if(parser.isSet("preview-sample")) {
+                tabs->setCurrentIndex(0);
+                auto* language=mainWindow.findChild<QComboBox*>("languageSelector");auto* appearance=mainWindow.findChild<QComboBox*>("appearanceSelector");
+                if(language){language->setCurrentIndex(1);app.processEvents();mainWindow.grab().save(previewDir+"/live-language-fa.png");language->setCurrentIndex(0);app.processEvents();mainWindow.grab().save(previewDir+"/live-language-en.png");}
+                if(appearance){appearance->setCurrentIndex(0);app.processEvents();mainWindow.grab().save(previewDir+"/live-theme-light.png");appearance->setCurrentIndex(1);app.processEvents();mainWindow.grab().save(previewDir+"/live-theme-dark.png");}
             }
             app.quit();
         });

@@ -21,6 +21,8 @@
 
 #include <QString>
 #include <QUrl>
+#include <QStringList>
+#include <QHostAddress>
 #include "common.h"
 #include "client/TrafficPolicy.h"
 #include <memory>
@@ -29,10 +31,12 @@ class MainWindow;
 class StoredServer;
 class VpnRoutes;
 class AppRouter;
+class ProxyStack;
+#include "client/ProxySettings.h"
 
 class VpnInfo {
 public:
-    VpnInfo(QString name, StoredServer* ss, MainWindow* m);
+    VpnInfo(QString name, StoredServer* ss, MainWindow* m,const QStringList& recoveryHosts={});
     ~VpnInfo();
 
     void setUrl(const QUrl& url);
@@ -46,7 +50,11 @@ public:
     bool is_username_form_option(struct oc_auth_form* form, struct oc_form_opt* opt);
     bool is_password_form_option(struct oc_auth_form* form, struct oc_form_opt* opt);
     bool applyTraffic(const QString& interfaceName);
+    bool setupProxy();
+    bool isProxyMode() const { return proxySettings.enabled; }
+    void restoreGamingRoutingIfDisabled();
     bool clientFailure = false;
+    bool diagnosticMode = false;
 
     QString last_err;
     QUrl mUrl;
@@ -63,8 +71,15 @@ public:
 
 private:
     SOCKET cmd_fd;
+    ProxySettings proxySettings;
+    std::unique_ptr<ProxyStack> proxyStack;
     TrafficPolicy trafficPolicy;
+    TrafficPolicy baseTrafficPolicy;
+    bool gamingRoutesActive = false;
     std::unique_ptr<VpnRoutes> routes;
     std::unique_ptr<AppRouter> appRouter;
     bool routesPrepared = false;
+    bool protectionEnabled = false;
+    QStringList recoveryHosts;
+    QList<QHostAddress> recoveryPeers;
 };

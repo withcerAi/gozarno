@@ -44,3 +44,6 @@ identify its applicable licenses and exceptions. This is a development preview.
 Extra build-tool notices may be present in licenses/MSYS2. Each component retains
 its original license; the AGPL routing executable is not described as covered by
 Gozarno's GPL-2.0 notice.
+
+Isolated SOCKS mode statically embeds lwIP 2.2.1 (BSD-3-Clause). See
+`licenses/lwIP-BSD.txt` and vendored `external/lwip/UPSTREAM.md`.

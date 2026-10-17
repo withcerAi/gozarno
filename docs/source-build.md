@@ -139,3 +139,9 @@ The source collector and bundle verification ran against the actual 1.2.1 payloa
 The client was built and its 22 tests passed. We have not rebuilt every upstream
 dependency or demonstrated a bit-for-bit reproducible installer. Signing keys,
 personal VPN settings and credentials are not part of these source archives.
+
+## Isolated SOCKS engine
+
+The additional OpenConnect packet-I/O patch and embedded lwIP build are described
+in `socks-mode.md`. Apply the packet patch before a clean SDK rebuild; an older
+SDK deliberately fails SOCKS mode instead of changing Windows network routing.

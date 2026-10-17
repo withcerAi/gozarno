@@ -1,0 +1,129 @@
+diff --git a/libopenconnect.map.in b/libopenconnect.map.in
+index f036c07..40561a1 100644
+--- a/libopenconnect.map.in
++++ b/libopenconnect.map.in
+@@ -133,7 +133,7 @@ OPENCONNECT_5_9 {
+ } OPENCONNECT_5_8;
+ 
+ OPENCONNECT_PRIVATE {
+- global: @SYMVER_TIME@ @SYMVER_GETLINE@ @SYMVER_JAVA@ @SYMVER_ASPRINTF@ @SYMVER_VASPRINTF@ @SYMVER_WIN32_STRERROR@ @SYMVER_WIN32_SETENV@
++ global: gozarno_openconnect_packet_io_v1; @SYMVER_TIME@ @SYMVER_GETLINE@ @SYMVER_JAVA@ @SYMVER_ASPRINTF@ @SYMVER_VASPRINTF@ @SYMVER_WIN32_STRERROR@ @SYMVER_WIN32_SETENV@
+ 	openconnect_get_tls_library_version;
+ 	openconnect_fopen_utf8;
+ 	openconnect_open_utf8;
+diff --git a/mainloop.c b/mainloop.c
+index 32bddcd..77948c6 100644
+--- a/mainloop.c
++++ b/mainloop.c
+@@ -52,6 +52,26 @@ int tun_mainloop(struct openconnect_info *vpninfo, int *timeout, int readable, i
+ 	struct pkt *this;
+ 	int work_done = 0;
+ 
++#ifdef _WIN32
++    if (vpninfo->gozarno_read_packet) {
++        int n, budget = 32;
++        if (*timeout > 10) *timeout = 10;
++        while (budget-- && vpninfo->outgoing_queue.count < vpninfo->max_qlen) {
++            struct pkt *p = alloc_pkt(vpninfo, vpninfo->ip_info.mtu + vpninfo->pkt_trailer);
++            if (!p) break;
++            n = vpninfo->gozarno_read_packet(vpninfo->gozarno_packet_data, p->data, vpninfo->ip_info.mtu);
++            if (n <= 0 || n > vpninfo->ip_info.mtu) { free_pkt(vpninfo,p); if(n < 0) vpninfo->quit_reason = "Proxy packet transport stopped"; break; }
++            p->len=n; queue_packet(&vpninfo->outgoing_queue,p);
++            vpninfo->stats.tx_pkts++; vpninfo->stats.tx_bytes+=n; work_done=1;
++        }
++        while ((this=dequeue_packet(&vpninfo->incoming_queue))) {
++            n=vpninfo->gozarno_write_packet(vpninfo->gozarno_packet_data,this->data,this->len);
++            if(n) { requeue_packet(&vpninfo->incoming_queue,this); if(n<0) vpninfo->quit_reason="Proxy packet transport stopped"; break; }
++            vpninfo->stats.rx_pkts++; vpninfo->stats.rx_bytes+=this->len; free_pkt(vpninfo,this);
++        }
++        return work_done;
++    }
++#endif
+ 	if (readable && read_fd_monitored(vpninfo, tun)) {
+ 		struct pkt *out_pkt = vpninfo->tun_pkt;
+ 		while (1) {
+@@ -412,7 +432,11 @@ int openconnect_mainloop(struct openconnect_info *vpninfo,
+ 	if (vpninfo->quit_reason && vpninfo->proto->vpn_close_session)
+ 		vpninfo->proto->vpn_close_session(vpninfo, vpninfo->quit_reason);
+ 
+-	if (tun_is_up(vpninfo))
++	if (tun_is_up(vpninfo)
++#ifdef _WIN32
++        && !vpninfo->gozarno_read_packet
++#endif
++    )
+ 		os_shutdown_tun(vpninfo);
+ 
+ 	if (vpninfo->cmd_fd >= 0)
+diff --git a/openconnect-internal.h b/openconnect-internal.h
+index f19b4d8..c4679aa 100644
+--- a/openconnect-internal.h
++++ b/openconnect-internal.h
+@@ -738,6 +738,9 @@ struct openconnect_info {
+ 	WINTUN_ADAPTER_HANDLE wintun_adapter;
+ 	WINTUN_SESSION_HANDLE wintun_session;
+ 
++	int (*gozarno_read_packet)(void *, unsigned char *, int);
++	int (*gozarno_write_packet)(void *, const unsigned char *, int);
++	void *gozarno_packet_data;
+ 	HANDLE tun_fh;
+ 	OVERLAPPED tun_rd_overlap, tun_wr_overlap;
+ 	int tun_idx, tun_rd_pending;
+@@ -1147,7 +1150,7 @@ static inline int set_fd_cloexec(int fd)
+ static inline int tun_is_up(struct openconnect_info *vpninfo)
+ {
+ #ifdef _WIN32
+-	return vpninfo->tun_fh != NULL;
++	return vpninfo->gozarno_read_packet || vpninfo->tun_fh != NULL;
+ #else
+ 	return vpninfo->tun_fd != -1;
+ #endif
+diff --git a/script.c b/script.c
+index 96d57a0..3564e7e 100644
+--- a/script.c
++++ b/script.c
+@@ -546,6 +546,9 @@ static wchar_t *create_script_env(struct openconnect_info *vpninfo)
+ 
+ int script_config_tun(struct openconnect_info *vpninfo, const char *reason)
+ {
++#ifdef _WIN32
++    if (vpninfo->gozarno_read_packet) return 0;
++#endif
+ 	wchar_t *script_w;
+ 	wchar_t *script_env;
+ 	int nr_chars;
+@@ -650,6 +653,9 @@ int apply_script_env(struct oc_vpn_option *envs)
+ 
+ int script_config_tun(struct openconnect_info *vpninfo, const char *reason)
+ {
++#ifdef _WIN32
++    if (vpninfo->gozarno_read_packet) return 0;
++#endif
+ 	int ret;
+ 	pid_t pid;
+ 
+diff --git a/tun-win32.c b/tun-win32.c
+index 749072c..adb4f3c 100644
+--- a/tun-win32.c
++++ b/tun-win32.c
+@@ -681,6 +681,20 @@ int openconnect_setup_tun_fd(struct openconnect_info *vpninfo, intptr_t tun_fd)
+ 	return 0;
+ }
+ 
++/* Gozarno private ABI v1: no OS tunnel, routes or scripts. */
++int gozarno_openconnect_packet_io_v1(struct openconnect_info *,
++    int (*)(void *, unsigned char *, int), int (*)(void *, const unsigned char *, int), void *);
++int gozarno_openconnect_packet_io_v1(struct openconnect_info *vpninfo,
++    int (*read_packet)(void *, unsigned char *, int),
++    int (*write_packet)(void *, const unsigned char *, int), void *data)
++{
++    if (!read_packet || !write_packet || vpninfo->tun_fh || vpninfo->wintun) return -EINVAL;
++    vpninfo->gozarno_read_packet=read_packet;
++    vpninfo->gozarno_write_packet=write_packet;
++    vpninfo->gozarno_packet_data=data;
++    return 0;
++}
++
+ int openconnect_setup_tun_script(struct openconnect_info *vpninfo,
+ 				 const char *tun_script)
+ {

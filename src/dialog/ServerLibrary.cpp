@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "ServerLibrary.h"
 #include "TrafficPolicyDialog.h"
+#include "FallbackDialog.h"
 #include "StableItemDelegate.h"
 #include "client/ServerCatalog.h"
 #include "OcSettings.h"
@@ -56,6 +57,10 @@ ServerLibrary::ServerLibrary(QWidget* parent) : QWidget(parent)
     button(tr("Traffic rules"), [this]() {
         if (selected().isEmpty()) return;
         TrafficPolicyDialog dialog(selected(), this); dialog.exec();
+    });
+    button(tr("Fallback servers"), [this]() {
+        if (selected().isEmpty()) return;
+        FallbackDialog dialog(selected(), this); dialog.exec();
     });
     button(tr("Copy"), [this]() {
         const auto source = selected(); if (source.isEmpty()) return;

@@ -35,7 +35,11 @@
 #include "ServerLibrary.h"
 #include "TrafficPolicyDialog.h"
 #include "client/GamingMode.h"
+#include "client/GamingSession.h"
+#include "client/GamingProfile.h"
+
 #include "client/AppRouter.h"
+#include "client/ProxySettings.h"
 #include <QSpinBox>
 #include <QSignalBlocker>
 #include <QFileDialog>
@@ -72,6 +76,12 @@ extern "C" {
 #include <QFormLayout>
 #include <QVBoxLayout>
 #include <QLabel>
+#include "client/ConnectionHealth.h"
+#include "client/KillSwitch.h"
+#include "client/NetworkEvents.h"
+#include "client/ProtectionValidation.h"
+#include <QSaveFile>
+#include <QJsonDocument>
 
 #include <cmath>
 #include <cstdarg>
@@ -115,7 +125,20 @@ MainWindow::MainWindow(QWidget* parent, bool useTray, const QString profileName)
 {
     ui->setupUi(this);
     connect(this, &MainWindow::client_error_sig, this, [this](const QString& message) {
-        QMessageBox::warning(this, tr("Client configuration"), message);
+        recoveryBlocked = true;
+        diagnosticReport.record("failure", {{"reason","configuration"}});
+        if (!qApp->property("diagnosticMode").toBool()) QMessageBox::warning(this, tr("Client configuration"), message);
+    }, Qt::QueuedConnection);
+    connect(this, &MainWindow::automatic_recovery_blocked_sig, this, [this] {
+        recoveryBlocked = true;
+    }, Qt::QueuedConnection);
+    connect(this, &MainWindow::connection_failure_sig, this, [this](const QString& reason,int code) {
+        lastDiagnosis = reason;
+        diagnosticReport.record("failure", {{"reason",reason},{"error_code",code}});
+        if (reason == "authentication") setConnectionMessage(tr("Authentication failed. Check this profile's account or one-time code."));
+        else if (reason == "cancelled") setConnectionMessage(tr("Authentication or connection was cancelled. Automatic recovery stopped."));
+        else if (reason == "configuration") setConnectionMessage(tr("A local configuration or protection component failed. Check the client log."));
+        else setConnectionMessage(tr("The server connection failed. The provider or internet path may be unavailable."));
     }, Qt::QueuedConnection);
 
     connect(ui->viewLogButton, &QPushButton::clicked,
@@ -129,15 +152,7 @@ MainWindow::MainWindow(QWidget* parent, bool useTray, const QString profileName)
     manager = new QNetworkAccessManager();
 
     connect(ui->actionQuit, &QAction::triggered,
-        [=]() {
-            if (futureWatcher.isRunning()) {
-                connect(&futureWatcher, &QFutureWatcher<void>::finished,
-                    qApp, &QApplication::quit, Qt::UniqueConnection);
-                if(cmd_fd != INVALID_SOCKET) on_disconnectClicked();
-            } else {
-                qApp->quit();
-            }
-        });
+        this, &MainWindow::requestShutdown);
 
     connect(blink_timer, &QTimer::timeout,
         this, &MainWindow::blink_ui,
@@ -393,7 +408,10 @@ static void term_thread(MainWindow* m, SOCKET* fd)
 
 MainWindow::~MainWindow()
 {
-    if (gamingMode) gamingMode->disable();
+    connectionWanted = false;
+    if (connectionHealth) connectionHealth->stop();
+    if (reconnectTimer) reconnectTimer->stop();
+    if (gamingSession) gamingSession->setEnabled(false);
     int counter = 10;
     if (this->timer->isActive()) {
         timer->stop();
@@ -500,6 +518,7 @@ QString MainWindow::normalize_byte_size(uint64_t bytes)
 
 void MainWindow::statsChanged(QString tx, QString rx, QString dtls)
 {
+    if(gamingSession) gamingSession->setTransport(dtls);
     ui->downloadLabel->setText(rx);
     ui->uploadLabel->setText(tx);
     ui->cipherDTLSLabel->setText(dtls);
@@ -535,6 +554,7 @@ void MainWindow::reload_settings()
 
             if (m_trayIcon) {
                 QAction* act = m_trayIconMenuConnections->addAction(str);
+                act->setProperty("translationExcluded",true);
                 connect(act, &QAction::triggered, [act, this]() {
                     int idx = ui->serverList->findText(act->text());
                     if (idx != -1) {
@@ -566,6 +586,17 @@ void MainWindow::blink_ui()
 
 void MainWindow::changeStatus(int val)
 {
+    currentConnectionState = val;
+    const bool proxyMode=property("proxyModeActive").toBool();
+    if (validationButton) validationButton->setEnabled(val==STATUS_CONNECTED && !proxyMode && !protectionWatcher.isRunning());
+    if (val == STATUS_CONNECTED) {
+        sessionEstablished = true;
+        if (connectionHealth && !proxyMode) connectionHealth->start(activeInterface,tunnelDns);
+        if (networkEvents) networkEvents->setTunnel(activeInterface);
+        diagnosticReport.record("connected", {{"kill_switch",killSwitch->active()},{"ipv4",!ip.isEmpty()},{"ipv6",!ip6.isEmpty()}});
+        setConnectionMessage(proxyMode ? tr("SOCKS is ready. Other connections stay direct.") : tr("Checking tunnel connectivity…"));
+    } else if (connectionHealth) connectionHealth->stop();
+    if (val == STATUS_DISCONNECTED) diagnosticReport.record("disconnected", {{"kill_switch",killSwitch->active()}});
     if (val == STATUS_CONNECTED) {
 
         blink_timer->stop();
@@ -579,7 +610,7 @@ void MainWindow::changeStatus(int val)
 
         ui->iconLabel->setPixmap(ON_ICON);
         ui->connectionButton->setIcon(connectionButtonIcon(ConnectionButtonAction::Disconnect));
-        ui->connectionButton->setText(tr("Disconnect"));
+        ui->connectionButton->setProperty("translationSourceText","Disconnect"); ui->connectionButton->setText(tr("Disconnect"));
 
         QFileSelector selector;
         if (m_trayIcon) {
@@ -630,7 +661,7 @@ void MainWindow::changeStatus(int val)
 
         ui->iconLabel->setPixmap(CONNECTING_ICON);
         ui->connectionButton->setIcon(connectionButtonIcon(ConnectionButtonAction::Cancel));
-        ui->connectionButton->setText(tr("Cancel"));
+        ui->connectionButton->setProperty("translationSourceText","Cancel"); ui->connectionButton->setText(tr("Cancel"));
         blink_timer->start(1500);
 
         disconnect(ui->connectionButton, &QPushButton::clicked,
@@ -664,7 +695,7 @@ void MainWindow::changeStatus(int val)
         ui->iconLabel->setPixmap(OFF_ICON);
         ui->connectionButton->setEnabled(true);
         ui->connectionButton->setIcon(connectionButtonIcon(ConnectionButtonAction::Connect));
-        ui->connectionButton->setText(tr("Connect"));
+        ui->connectionButton->setProperty("translationSourceText","Connect"); ui->connectionButton->setText(tr("Connect"));
 
         if (m_trayIcon) {
             QFileSelector selector;
@@ -716,6 +747,7 @@ static void main_loop(VpnInfo* vpninfo, MainWindow* m)
         retry = false;
         ret = vpninfo->connect();
         if (ret != 0) {
+            if (qApp->property("diagnosticMode").toBool()) goto fail;
             if (vpninfo->clientFailure) {
                 Logger::instance().addMessage(vpninfo->last_err);
                 emit m->client_error_sig(vpninfo->last_err);
@@ -756,16 +788,37 @@ static void main_loop(VpnInfo* vpninfo, MainWindow* m)
     vpninfo->get_cipher_info(cstp, dtls);
     m->vpn_status_changed(STATUS_CONNECTED, dns, ip, ip6, cstp, dtls);
 
-    if (vpninfo->ss->save() < 0) emit m->client_error_sig(vpninfo->ss->m_last_err);
+    if (!qApp->property("diagnosticMode").toBool() && vpninfo->ss->save() < 0) emit m->client_error_sig(vpninfo->ss->m_last_err);
     vpninfo->mainloop();
 
 fail: // LCA: drop this 'goto' and optimize values...
+    if (ret != 0) emit m->connection_failure_sig(vpninfo->clientFailure ? "configuration"
+        : ret == -EACCES || ret == -EPERM ? "authentication" : ret == -EINTR ? "cancelled" : "transport", ret);
+    if (ret == -EINTR || ret == -EACCES || ret == -EPERM)
+        emit m->automatic_recovery_blocked_sig();
     delete vpninfo;
     m->vpn_status_changed(STATUS_DISCONNECTED);
 }
 
 void MainWindow::on_disconnectClicked()
 {
+    if (validationStop) validationStop->store(true);
+    connectionWanted = false;
+    waitingForNetwork = false;
+    pendingFallback.clear();
+    diagnosticReport.record("manual_stop");
+    reconnectTimer->stop();
+    connectionHealth->stop();
+    // Release only after the worker has restored routes and closed its tunnel.
+    if (!futureWatcher.isRunning()) {
+        emit proxy_configuration_locked_sig(false);
+        QString error;
+        if (!killSwitch->release(error)) emit client_error_sig(error);
+        setConnectionMessage(tr("Protection stopped by user."));
+        ui->serverList->setEnabled(true);
+        serverLibrary->setEnabled(true);
+        ui->connectionButton->setProperty("translationSourceText","Connect"); ui->connectionButton->setText(tr("Connect"));
+    }
     if (this->timer->isActive()) {
         this->timer->stop();
     }
@@ -775,6 +828,13 @@ void MainWindow::on_disconnectClicked()
 
 void MainWindow::on_connectClicked()
 {
+    if (!recoveryLaunch && (reconnectTimer->isActive() || waitingForNetwork)) {
+        on_disconnectClicked(); return;
+    }
+    if (!recoveryLaunch && killSwitch->active() && reconnectProfile != ui->serverList->currentText()) {
+        QMessageBox::information(this, tr("Kill switch"), tr("Release protection before connecting to another profile."));
+        return;
+    }
     VpnInfo* vpninfo = nullptr;
     StoredServer* ss = nullptr;
     QFuture<void> future;
@@ -852,10 +912,39 @@ void MainWindow::on_connectClicked()
     }
 
     query.setUrl(turl);
+    if (!recoveryLaunch) {
+        QStringList available;
+        for (int i=0;i<ui->serverList->count();++i) available.append(ui->serverList->itemText(i));
+        OcSettings stored;
+        const auto primary = ui->serverList->currentText();
+        failoverPlan.reset(primary,stored.value("server:"+primary+"/recovery/fallbacks").toStringList(),available);
+        recoveryGatewayHosts.clear();
+        for (const auto& profile : failoverPlan.approved()) {
+            const auto host = QUrl::fromUserInput(stored.value("server:"+profile+"/server").toString()).host();
+            if (!host.isEmpty() && !recoveryGatewayHosts.contains(host)) recoveryGatewayHosts.append(host);
+        }
+        pendingFallback.clear(); waitingForNetwork = false;
+    }
+    {
+        OcSettings settings;
+        if (!ProxySettings::load().enabled && settings.value("Client/killSwitch", false).toBool() && ss->get_proxy()) {
+            delete ss;
+            emit client_error_sig(tr("Disable the system proxy for this profile before enabling kill switch."));
+            return;
+        }
+    }
 
+    {
+    const auto proxyConfig=ProxySettings::load();
+    if(proxyConfig.enabled && killSwitch->active()) {
+        delete ss;emit client_error_sig(tr("Release the existing VPN protection before starting isolated SOCKS mode."));return;
+    }
+    setProperty("proxyModeActive",proxyConfig.enabled);
+    emit proxy_configuration_locked_sig(true);
+    }
     /* ss is now deallocated by vpninfo */
     try {
-        vpninfo = new VpnInfo(QStringLiteral("AnyConnect-compatible OpenConnect GUI VPN Agent"), ss, this);
+        vpninfo = new VpnInfo(QStringLiteral("AnyConnect-compatible OpenConnect GUI VPN Agent"), ss, this,recoveryGatewayHosts);
     } catch (std::exception& ex) {
         QMessageBox::information(this,
             qApp->applicationName(),
@@ -905,13 +994,23 @@ void MainWindow::on_connectClicked()
         }
     }
 
+    if (!recoveryLaunch) {
+        sessionEstablished = false; reconnectAttempts = 0;
+        reconnectProfile = ui->serverList->currentText();
+    }
+    connectionWanted = true;
+    recoveryBlocked = false;
+    diagnosticReport.record("connect", {{"attempt",reconnectAttempts}});
     future = QtConcurrent::run(main_loop, vpninfo, this);
 
     this->futureWatcher.setFuture(future);
 
     return;
 fail: // LCA: remote 'fail' label :/
+    emit proxy_configuration_locked_sig(false);
     delete vpninfo;
+    cmd_fd = INVALID_SOCKET;
+    if (recoveryLaunch) { recoveryBlocked=true; setConnectionMessage(tr("Automatic recovery stopped because this profile could not be initialized.")); }
 }
 
 void MainWindow::closeEvent(QCloseEvent* event)
@@ -920,15 +1019,9 @@ void MainWindow::closeEvent(QCloseEvent* event)
         this->showMinimized();
         event->ignore();
     } else {
-        event->accept();
-
-        if (futureWatcher.isRunning()) {
-            connect(&futureWatcher, &QFutureWatcher<void>::finished,
-                qApp, &QApplication::quit, Qt::UniqueConnection);
-            if(cmd_fd != INVALID_SOCKET) on_disconnectClicked();
-        } else {
-            qApp->quit();
-        }
+        if (futureWatcher.isRunning() || protectionWatcher.isRunning()) event->ignore();
+        else event->accept();
+        requestShutdown();
     }
     QMainWindow::closeEvent(event);
 }
@@ -953,28 +1046,90 @@ void MainWindow::request_update_stats()
 // Client interface changes, 2026-10-06. Network and authentication remain upstream.
 void MainWindow::setupClientInterface()
 {
-    gamingMode.reset(new GamingMode);
+    killSwitch.reset(new KillSwitch);
+    connectionHealth = new ConnectionHealth(this);
+    networkEvents = new NetworkEvents(this);
+    reconnectTimer = new QTimer(this); reconnectTimer->setSingleShot(true);
+    connect(this,&MainWindow::tunnel_context_sig,this,[this](const QString& name,const QStringList& resolvers,const QList<QHostAddress>& gateways) {
+        activeInterface=name; tunnelDns=resolvers; tunnelGateways=gateways; networkEvents->setTunnel(name);
+    },Qt::QueuedConnection);
+    connect(networkEvents,&NetworkEvents::environmentChanged,this,[this](const QString& reason) {
+        diagnosticReport.record("environment",{{"reason",reason}});
+        if (!connectionWanted) return;
+        if (property("proxyModeActive").toBool() && futureWatcher.isRunning()) return;
+        if (futureWatcher.isRunning() && sessionEstablished) {
+            setConnectionMessage(reason=="resume" ? tr("System resumed. Checking the VPN connection…") : tr("Network changed. Checking the VPN connection…"));
+            connectionHealth->recheck();
+        } else if (!futureWatcher.isRunning() && !reconnectTimer->isActive()) scheduleRecovery();
+    });
+    connect(connectionHealth,&ConnectionHealth::recoveryExhausted,this,&MainWindow::tryFallback);
+    connect(connectionHealth,&ConnectionHealth::diagnosisChanged,this,[this](const QString& code,const QString& message) {
+        lastDiagnosis=code; setConnectionMessage(message);
+        diagnosticReport.record("health",{{"reason",code}});
+        if (code=="healthy") reconnectAttempts=0;
+    });
+    connect(connectionHealth, &ConnectionHealth::recoveryRequested, this, [this] {
+        if (!connectionWanted || !pendingFallback.isEmpty() || cmd_fd == INVALID_SOCKET) return;
+        if(gamingSession && gamingSession->protectsMatch() && lastDiagnosis!="tunnel_unavailable") {
+            setConnectionMessage(tr("Gaming session protected: health warning recorded without forcing a transport restart.")); return;
+        }
+        // PAUSE closes transport connections while preserving the current cookie
+        // and tunnel. VpnInfo::mainloop re-enters OpenConnect to resume them.
+        const char command = lastDiagnosis=="tunnel_unavailable" ? OC_CMD_CANCEL : OC_CMD_PAUSE;
+        if (pipe_write(cmd_fd, &command, 1) != 1) {
+            Logger::instance().addMessage(tr("Cannot request tunnel recovery.")); return;
+        }
+        setConnectionMessage(tr("Connection interrupted · reconnecting…"));
+        diagnosticReport.record("recovery",{{"reason",lastDiagnosis},{"attempt",reconnectAttempts}});
+        Logger::instance().addMessage(tr("Tunnel checks failed. Reconnecting with the existing session."));
+    });
+    connect(connectionHealth, &ConnectionHealth::healthChanged, this, [this](bool healthy) {
+        // The main connection badge must not continue claiming a healthy session.
+        emit connectivity_health_sig(healthy);
+    });
+    connect(&futureWatcher, &QFutureWatcher<void>::finished, this, [this] {
+        connectionHealth->stop();
+        if (shuttingDown) { if (!protectionWatcher.isRunning()) qApp->quit(); return; }
+        if (qApp->property("diagnosticMode").toBool()) {
+            if (!validationStarted) { diagnosticReport.record("protection_test",{{"test","connection"},{"result","failed"}}); emit protection_validation_finished_sig(); }
+            return;
+        }
+        if (!connectionWanted) {
+            emit proxy_configuration_locked_sig(false);
+            QString error;
+            if (!killSwitch->release(error)) emit client_error_sig(error);
+            setConnectionMessage(tr("Protection stopped by user."));
+            return;
+        }
+        scheduleRecovery();
+    });
+    connect(reconnectTimer, &QTimer::timeout, this, [this] {
+        if (!connectionWanted) return;
+        const int index = ui->serverList->findText(reconnectProfile);
+        if (index < 0) { recoveryBlocked = true; setConnectionMessage(tr("The approved recovery profile no longer exists.")); return; }
+        ui->serverList->setCurrentIndex(index);
+        recoveryLaunch = true; on_connectClicked(); recoveryLaunch = false;
+    });
+    gamingSession = new GamingSession(this);
     gamingButton = new QPushButton(tr("Gaming mode"), this);
     gamingButton->setIcon(QIcon(QStringLiteral(":/images/gozarno/game.png")));
-    gamingButton->setCheckable(true); gamingButton->setEnabled(false);
-    gamingButton->setToolTip(tr("Use smaller tunnel packets for UDP traffic. Changes apply only to this VPN adapter and are restored when disabled or disconnected. Ping improvements depend on your server and internet route."));
+    gamingButton->setCheckable(true);
+    gamingButton->setToolTip(tr("Arm gaming before connection for game application routing. Quality probes, packet-size tuning and selected background upload limits run only while enabled."));
     ui->horizontalLayout_Buttons->addWidget(gamingButton);
     connect(this, &MainWindow::tunnel_ready_sig, this, [this](const QString& name) { activeInterface = name; }, Qt::QueuedConnection);
     connect(this, &MainWindow::vpn_status_changed_sig, this, [this](int status) {
-        gamingButton->setEnabled(status == STATUS_CONNECTED);
-        if (status != STATUS_CONNECTED && gamingMode->active()) {
-            QString error;
-            if (!gamingMode->disable(&error)) emit client_error_sig(error);
-            const QSignalBlocker blocker(gamingButton); gamingButton->setChecked(false);
-        }
+        const bool proxy=status==STATUS_DISCONNECTED?ProxySettings::load().enabled:property("proxyModeActive").toBool();
+        gamingButton->setEnabled(!proxy && (status == STATUS_CONNECTED || status == STATUS_DISCONNECTED));
+        gamingSession->setConnection(proxy?QString():activeInterface,reconnectProfile,!proxy && status==STATUS_CONNECTED);
         if (status == STATUS_DISCONNECTED) activeInterface.clear();
     });
     connect(gamingButton, &QPushButton::toggled, this, [this](bool checked) {
-        QString error; OcSettings settings;
-        const bool ok = checked ? gamingMode->enable(activeInterface, settings.value("Client/gamingMtu", 1280).toUInt(), error)
-            : gamingMode->disable(&error);
-        if (!ok) { const QSignalBlocker blocker(gamingButton); gamingButton->setChecked(gamingMode->active()); emit client_error_sig(error); }
+        if(qApp->property("diagnosticMode").toBool()) return;
+        OcSettings settings; settings.setValue("Client/gamingEnabled",checked); gamingSession->setEnabled(checked);
     });
+    connect(gamingSession,&GamingSession::armedChanged,this,[](bool value) { if(!qApp->property("diagnosticMode").toBool()) {OcSettings s; s.setValue("Client/gamingEnabled",value);} });
+    // Enabling is explicit per launch. Profiles and measurements remain saved.
+    if(!qApp->property("diagnosticMode").toBool()) {OcSettings s; s.setValue("Client/gamingEnabled",false);}
     serverLibrary = new ServerLibrary(ui->tabWidget);
     ui->tabWidget->addTab(serverLibrary, tr("Server library"));
     connect(serverLibrary, &ServerLibrary::profilesChanged, this, &MainWindow::reload_settings);
@@ -1016,6 +1171,47 @@ void MainWindow::setupClientInterface()
     theme->addItem(tr("Light"), false);
     theme->addItem(tr("Dark"), true);
     OcSettings settings;
+    healthLabel = new QLabel(tr("Connection protection is ready."), page);
+    healthLabel->setObjectName("connectionHealthStatus"); healthLabel->setWordWrap(true);
+    form->addRow(tr("Connection health"), healthLabel);
+    const auto protectionPreference = [this, page, form, &settings](const QString& title, const QString& key, bool initial) {
+        auto* box = new QCheckBox(title, page);
+        box->setChecked(settings.value(key, initial).toBool()); form->addRow(box);
+        connect(box, &QCheckBox::toggled, this, [this, key](bool checked) {
+            OcSettings stored; stored.setValue(key, checked);
+            if (key == "Client/autoReconnect" && !checked) reconnectTimer->stop();
+        });
+        return box;
+    };
+    protectionPreference(tr("Check real tunnel connectivity"), "Client/healthCheck", true);
+    protectionPreference(tr("Reconnect automatically"), "Client/autoReconnect", true);
+    auto* kill = protectionPreference(tr("Kill switch"), "Client/killSwitch", false);
+    kill->setObjectName("killSwitchPreference");
+    kill->setToolTip(tr("Applies on the next connection. Blocks direct traffic, including direct routing rules. Protection stays active during reconnects; disconnect or quit releases it. A process crash also removes protection."));
+    auto* targets = new QLineEdit(settings.value("Client/healthTargets", QStringList{"1.1.1.1", "8.8.8.8"}).toStringList().join(", "), page);
+    ClientLanguage::technical(targets);
+    targets->setToolTip(tr("Two or more numeric IP addresses reachable on TCP port 443 through your provider. Any successful endpoint confirms connectivity."));
+    form->addRow(tr("Health check addresses"), targets);
+    connect(targets, &QLineEdit::editingFinished, this, [this, targets] {
+        QStringList list;
+        for (const auto& item : targets->text().split(',')) {
+            const QHostAddress address(item.trimmed());
+            if (address.isNull() || address.isLoopback() || address.isMulticast() || address.isLinkLocal()) {
+                emit client_error_sig(tr("Enter at least two valid IP addresses separated by commas.")); return;
+            }
+            if (!list.contains(address.toString())) list.append(address.toString());
+        }
+        if (list.size() < 2) { emit client_error_sig(tr("Enter at least two valid IP addresses separated by commas.")); return; }
+        OcSettings stored; stored.setValue("Client/healthTargets", list);
+    });
+    auto* release = new QPushButton(tr("Release protection"), page); form->addRow(release);
+    connect(release, &QPushButton::clicked, this, &MainWindow::on_disconnectClicked);
+    auto* report = new QPushButton(tr("Export diagnostic report…"),page); report->setObjectName("diagnosticReportButton"); form->addRow(report);
+    report->setToolTip(tr("Exports connection events and test results without credentials, raw logs, server names or addresses."));
+    connect(report,&QPushButton::clicked,this,&MainWindow::exportDiagnosticReport);
+    validationButton = new QPushButton(tr("Run protection checks"),page); validationButton->setObjectName("protectionValidationButton"); validationButton->setEnabled(false); form->addRow(validationButton);
+    validationButton->setToolTip(tr("Connect first. Tests temporary protection, physical IPv4/IPv6 and DNS blocking, tunnel interruption and recovery. Network requests may pause briefly; temporary test rules are removed automatically."));
+    connect(validationButton,&QPushButton::clicked,this,&MainWindow::runProtectionChecks);
     const bool dark = settings.value("Client/darkTheme", true).toBool();
     theme->setCurrentIndex(dark ? 1 : 0);
     applyClientTheme(dark);
@@ -1027,15 +1223,13 @@ void MainWindow::setupClientInterface()
     connect(language,QOverload<int>::of(&QComboBox::currentIndexChanged),this,[this,language](int index) {
         OcSettings stored; stored.setValue("Client/language",language->itemData(index).toString()); stored.sync();
         if(stored.status()!=QSettings::NoError) { QMessageBox::warning(this,tr("Save failed"),tr("Could not save the language setting.")); return; }
-        QMessageBox::information(this,tr("Language saved"),tr("The language applies on the next launch. Choose Help & more → Quit, then reopen Gozarno. Changing this setting does not interrupt the current connection; saved server profiles are preserved."));
+        ClientLanguage::apply(language->itemData(index).toString());
+        applyClientTheme(stored.value("Client/darkTheme",true).toBool());
     });
-    auto* gamingMtu = new QSpinBox(page);
-    ClientLanguage::technical(gamingMtu);
-    gamingMtu->setRange(1280, 1500); gamingMtu->setValue(settings.value("Client/gamingMtu", 1280).toInt());
-    form->addRow(tr("Gaming packet size"), gamingMtu);
-    connect(gamingMtu, QOverload<int>::of(&QSpinBox::valueChanged), this, [](int value) {
-        OcSettings settings; settings.setValue("Client/gamingMtu", value);
-    });
+    auto* gamePreferences = new QLabel(tr("Enable gaming on the connection page. Everything is adjusted automatically."),page);
+    gamePreferences->setWordWrap(true);
+    form->addRow(tr("Gaming mode"),gamePreferences);
+
     auto* engineButton = new QPushButton(tr("Check application routing setup"), page);
     engineButton->setObjectName("engineCheckButton");
     engineButton->setToolTip(tr("Check whether the local TCP and UDP routing prerequisites are available."));
@@ -1079,6 +1273,107 @@ void MainWindow::setupClientInterface()
     buildClientShell();
 }
 
+bool MainWindow::protectTunnel(const QString& name, const QList<QHostAddress>& gateways, QString& error)
+{
+    if (!killSwitch->arm(gateways, error)) return false;
+    if (!killSwitch->allowTunnel(name, error)) return false;
+    return true;
+}
+
+void MainWindow::setConnectionMessage(const QString& message) {
+    if (healthLabel) healthLabel->setText(message);
+    emit diagnosis_message_sig(message);
+}
+void MainWindow::tryFallback() {
+    OcSettings settings;
+    if(gamingSession && gamingSession->protectsMatch()) {
+        setConnectionMessage(tr("Gaming session protected: automatic VPN profile switching is paused.")); return;
+    }
+    if (!connectionWanted || recoveryBlocked || !settings.value("Client/autoReconnect",true).toBool()
+        || !pendingFallback.isEmpty() || !failoverPlan.hasNext()) return;
+    pendingFallback=failoverPlan.next();
+    diagnosticReport.record("fallback");
+    setConnectionMessage(tr("Trying an approved fallback profile with its own account and settings."));
+    if (futureWatcher.isRunning()) term_thread(this,&cmd_fd);
+}
+void MainWindow::scheduleRecovery() {
+    OcSettings settings;
+    if (!connectionWanted) return;
+    if (recoveryBlocked || !settings.value("Client/autoReconnect",true).toBool()) {
+        connectionWanted=false; emit proxy_configuration_locked_sig(false);
+        setConnectionMessage(killSwitch->active() ? tr("Internet blocked by kill switch. Click Release protection to restore it.")
+            : tr("Connection stopped. Reconnect manually to retry.")); return;
+    }
+    if (!NetworkEvents::physicalNetworkAvailable(activeInterface)) {
+        waitingForNetwork=true; setConnectionMessage(tr("Local network or default route is unavailable. Waiting for the network."));
+    } else {
+        waitingForNetwork=false;
+        if (pendingFallback.isEmpty() && reconnectAttempts>=3) tryFallback();
+        if (!pendingFallback.isEmpty()) { reconnectProfile=pendingFallback; pendingFallback.clear(); reconnectAttempts=0; }
+        if ((!sessionEstablished && failoverPlan.approved().size()<2) || reconnectAttempts>=3) {
+            connectionWanted=false; emit proxy_configuration_locked_sig(false);
+            setConnectionMessage(killSwitch->active() ? tr("Internet blocked by kill switch. Click Release protection to restore it.")
+                : tr("Connection stopped. Reconnect manually to retry.")); return;
+        }
+        const int seconds=5*(1<<reconnectAttempts++);
+        reconnectTimer->start(seconds*1000);
+        setConnectionMessage(tr("Connection interrupted · retry in %1 seconds. Click Disconnect to stop.").arg(seconds));
+    }
+    ui->connectionButton->setProperty("translationSourceText","Disconnect"); ui->connectionButton->setText(tr("Disconnect"));
+    ui->serverList->setEnabled(false); serverLibrary->setEnabled(false);
+    if (m_trayIcon) m_disconnectAction->setEnabled(true);
+}
+void MainWindow::exportDiagnosticReport() {
+    const auto path=QFileDialog::getSaveFileName(this,tr("Export diagnostic report"),"gozarno-diagnostics.json",tr("JSON files (*.json)"));
+    if (path.isEmpty()) return;
+    if (!writeDiagnosticReport(path)) QMessageBox::warning(this,tr("Export failed"),tr("Could not save the diagnostic report."));
+}
+bool MainWindow::writeDiagnosticReport(const QString& path) {
+    QSaveFile file(path); const auto bytes=diagnosticReport.document().toJson(QJsonDocument::Indented);
+    return file.open(QIODevice::WriteOnly) && file.write(bytes)==bytes.size() && file.commit();
+}
+void MainWindow::requestShutdown() {
+    if(shuttingDown) return;
+    shuttingDown=true; on_disconnectClicked();
+    if (!futureWatcher.isRunning() && !protectionWatcher.isRunning()) qApp->quit();
+}
+void MainWindow::runProtectionChecks() {
+    if (property("proxyModeActive").toBool()) {
+        setConnectionMessage(tr("SOCKS mode does not run system firewall or adapter checks."));
+        emit protection_validation_finished_sig();return;
+    }
+    if (currentConnectionState!=STATUS_CONNECTED || protectionWatcher.isRunning()) return;
+    validationStarted=true; validationButton->setEnabled(false);
+    validationStop=std::make_shared<std::atomic_bool>(false);
+    disconnect(&protectionWatcher,nullptr,this,nullptr);
+    setConnectionMessage(tr("Running temporary protection checks…"));
+    // Keep the window alive until validation closes its dynamic filtering session.
+    connect(&protectionWatcher,&QFutureWatcher<QJsonObject>::finished,this,[this] {
+        const auto results=protectionWatcher.result(); int passed=0,failed=0,skipped=0;
+        for (auto it=results.begin();it!=results.end();++it) {
+            const auto result=it.value().toString();
+            diagnosticReport.record("protection_test",{{"test",it.key()},{"result",result}});
+            if(result=="passed") ++passed; else if(result=="failed") ++failed; else ++skipped;
+        }
+        validationButton->setEnabled(currentConnectionState==STATUS_CONNECTED);
+        setConnectionMessage(tr("Protection checks: %1 passed, %2 failed, %3 not verified. Export the report for details.").arg(passed).arg(failed).arg(skipped));
+        if(shuttingDown && !futureWatcher.isRunning()) qApp->quit();
+        emit protection_validation_finished_sig();
+    });
+    const auto name=activeInterface; const auto resolvers=tunnelDns; const auto peers=tunnelGateways;
+    const auto reconnect=[this] {
+        QMetaObject::invokeMethod(this,[this] {
+            if (!connectionWanted || cmd_fd==INVALID_SOCKET) return;
+            const char command=OC_CMD_PAUSE; pipe_write(cmd_fd,&command,1);
+            diagnosticReport.record("recovery",{{"reason","transport"}});
+        },Qt::QueuedConnection);
+    };
+    const auto cancellation=validationStop;
+    protectionWatcher.setFuture(QtConcurrent::run([name,peers,resolvers,reconnect,cancellation] {
+        return ProtectionValidation::run(name,peers,resolvers,reconnect,[cancellation] { return cancellation->load(); });
+    }));
+}
+
 void MainWindow::readSettings()
 {
     OcSettings settings;
@@ -1120,6 +1415,7 @@ void MainWindow::readSettings()
 
 void MainWindow::writeSettings()
 {
+    if (qApp->property("diagnosticMode").toBool()) return;
     OcSettings settings;
     settings.beginGroup("MainWindow");
     settings.setValue("geometry", saveGeometry());

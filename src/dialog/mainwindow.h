@@ -22,6 +22,8 @@
 #include "common.h"
 #include "OcSettings.h"
 #include "client/ConnectionState.h"
+#include "client/DiagnosticReport.h"
+#include "client/FailoverPlan.h"
 
 #include <QCoreApplication>
 #include <QFutureWatcher>
@@ -31,8 +33,10 @@
 #include <QSystemTrayIcon>
 #include <QTimer>
 #include <QNetworkReply>
+#include <QHostAddress>
 #include <QProgressDialog>
 #include <memory>
+#include <atomic>
 
 #ifndef _WIN32
 #include <cerrno>
@@ -50,8 +54,13 @@ class LogDialog;
 class QStateMachine;
 class ServerLibrary;
 class GamingMode;
+class GamingSession;
 class QPushButton;
 class SessionActivity;
+class ConnectionHealth;
+class KillSwitch;
+class NetworkEvents;
+class QLabel;
 
 namespace Ui {
 class MainWindow;
@@ -75,6 +84,12 @@ public:
         QString& dtls_cipher);
 
     int get_log_level();
+    bool protectTunnel(const QString& name, const QList<QHostAddress>& gateways, QString& error);
+    void exportDiagnosticReport();
+    bool writeDiagnosticReport(const QString& path);
+    void runProtectionChecks();
+    void requestShutdown();
+
 
 public slots:
     void iconActivated(QSystemTrayIcon::ActivationReason reason);
@@ -103,6 +118,12 @@ public slots:
     void on_actionWebSite_triggered();
 
 signals:
+    void connectivity_health_sig(bool healthy);
+    void automatic_recovery_blocked_sig();
+    void connection_failure_sig(QString reason,int code);
+    void diagnosis_message_sig(QString message);
+    void tunnel_context_sig(QString interfaceName,QStringList resolvers,QList<QHostAddress> gateways);
+    void protection_validation_finished_sig();
     void session_info_sig(QString,QString,QString,QString,QString);
     void traffic_totals_sig(quint64,quint64);
     void stats_changed_sig(QString, QString, QString);
@@ -112,6 +133,10 @@ signals:
     void version_download_completed_sig();
     void client_error_sig(QString message);
     void tunnel_ready_sig(QString interfaceName);
+    void proxy_ready_sig(QString endpoints);
+    void proxy_diagnostics_sig(QJsonObject counters);
+    void proxy_notice_sig(QString message);
+    void proxy_configuration_locked_sig(bool locked);
 
 private slots:
     void createLogDialog();
@@ -125,9 +150,38 @@ private:
     void applyClientTheme(bool dark);
     ServerLibrary* serverLibrary = nullptr;
     SessionActivity* sessionActivity = nullptr;
-    std::unique_ptr<GamingMode> gamingMode;
+    GamingSession* gamingSession = nullptr;
+
     QPushButton* gamingButton = nullptr;
     QString activeInterface;
+    ConnectionHealth* connectionHealth = nullptr;
+    NetworkEvents* networkEvents = nullptr;
+    DiagnosticReport diagnosticReport;
+    FailoverPlan failoverPlan;
+    QStringList recoveryGatewayHosts;
+    QStringList tunnelDns;
+    QList<QHostAddress> tunnelGateways;
+    QString pendingFallback;
+    QString lastDiagnosis;
+    bool waitingForNetwork = false;
+    QFutureWatcher<QJsonObject> protectionWatcher;
+    bool validationStarted = false;
+    bool shuttingDown = false;
+    int currentConnectionState = STATUS_DISCONNECTED;
+    QPushButton* validationButton = nullptr;
+    std::shared_ptr<std::atomic_bool> validationStop;
+    void setConnectionMessage(const QString& message);
+    void scheduleRecovery();
+    void tryFallback();
+    std::unique_ptr<KillSwitch> killSwitch;
+    QLabel* healthLabel = nullptr;
+    bool connectionWanted = false;
+    bool sessionEstablished = false;
+    bool recoveryLaunch = false;
+    bool recoveryBlocked = false;
+    int reconnectAttempts = 0;
+    QString reconnectProfile;
+    QTimer* reconnectTimer = nullptr;
     void gotLatestVersion(QNetworkReply *reply);
     void checkLatestVersion() const;
 

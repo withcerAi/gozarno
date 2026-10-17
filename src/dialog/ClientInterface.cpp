@@ -7,9 +7,20 @@
 #include "client/ClientTheme.h"
 #include "client/ClientLanguage.h"
 #include "client/ConnectionButtonIcon.h"
+#include "client/PublicIpLookup.h"
+#include "client/GamingSession.h"
+#include "client/ProxySettings.h"
+#include <QNetworkInterface>
+#include <QLineEdit>
+#include <QCheckBox>
+#include <QMessageBox>
+#include <QtConcurrent>
+#include <QDateTime>
+#include <QLocale>
 #include "ServerLibrary.h"
 #include "SessionActivity.h"
 #include "ComponentsWidget.h"
+#include "ProxyEndpointWidget.h"
 #include <QStatusBar>
 #include <QApplication>
 #include <QButtonGroup>
@@ -41,7 +52,7 @@ QFrame* card(QWidget* parent, QVBoxLayout*& layout, const QString& name = {})
 {
     auto* frame = new QFrame(parent); frame->setObjectName(name);
     frame->setProperty("card", true);
-    layout = new QVBoxLayout(frame); layout->setContentsMargins(24,24,24,24); layout->setSpacing(14);
+    layout = new QVBoxLayout(frame); layout->setContentsMargins(16,16,16,16); layout->setSpacing(8);
     return frame;
 }
 QIcon navIcon(int kind)
@@ -65,14 +76,14 @@ QIcon navIcon(int kind)
 }
 class ConnectionVisual final : public QWidget {
 public:
-    explicit ConnectionVisual(QWidget* parent) : QWidget(parent) { setMinimumHeight(148); setMaximumHeight(170); }
+    explicit ConnectionVisual(QWidget* parent) : QWidget(parent) { setMinimumHeight(96); setMaximumHeight(112); }
     int state = STATUS_DISCONNECTED;
 protected:
     void paintEvent(QPaintEvent*) override {
         QPainter p(this); p.setRenderHint(QPainter::Antialiasing);
         const QPointF c(width()/2., height()/2.);
         const QColor accent(state == STATUS_CONNECTED ? "#45e0b6" : state == STATUS_CONNECTING ? "#e7be72" : "#53c9af");
-        for(int radius : {67,54}) { p.setPen(QPen(QColor(accent.red(),accent.green(),accent.blue(),25),1)); p.setBrush(Qt::NoBrush); p.drawEllipse(c,radius,radius); }
+        for(int radius : {47,39}) { p.setPen(QPen(QColor(accent.red(),accent.green(),accent.blue(),25),1)); p.setBrush(Qt::NoBrush); p.drawEllipse(c,radius,radius); }
         QRadialGradient halo(c,58); halo.setColorAt(0,QColor(69,224,182,35)); halo.setColorAt(1,QColor(69,224,182,0));
         p.setPen(Qt::NoPen); p.setBrush(halo); p.drawEllipse(c,58,58);
         p.setBrush(Qt::NoBrush); p.setPen(QPen(accent,5,Qt::SolidLine,Qt::RoundCap));
@@ -86,14 +97,14 @@ protected:
 
 void MainWindow::buildClientShell()
 {
-    setMinimumSize(940,640); resize(1120,830);
+    setMinimumSize(1000,720); resize(1040,740);
     ui->statusBar->hide();
     qApp->setFont(QFont("Segoe UI",10));
     // Keep the existing connection/controller widgets, rebuild their presentation.
     ui->iconLabel->hide(); ui->serverLabel->hide();
     delete ui->gridLayout_2;
-    auto* home = new QVBoxLayout(ui->tabWidget_main); home->setContentsMargins(0,0,0,0); home->setSpacing(18);
-    auto* columns = new QHBoxLayout; columns->setSpacing(18); home->addLayout(columns,1);
+    auto* home = new QVBoxLayout(ui->tabWidget_main); home->setContentsMargins(0,0,0,0); home->setSpacing(10);
+    auto* columns = new QHBoxLayout; columns->setSpacing(10); home->addLayout(columns,1);
     QVBoxLayout *connectionLayout, *summaryLayout;
     auto* connectionCard = card(ui->tabWidget_main,connectionLayout,"connectionCard"); columns->addWidget(connectionCard,3);
     auto* badge = text(tr("●  DISCONNECTED"),"badge",connectionCard); badge->setAlignment(Qt::AlignCenter); connectionLayout->addWidget(badge);
@@ -107,13 +118,35 @@ void MainWindow::buildClientShell()
     ui->serverList->setMinimumHeight(46); ui->serverListControl->setMinimumSize(44,46);
     ui->serverListControl->setToolTip(tr("Manage selected server"));
     ui->serverListControl->setIcon(navIcon(1));
+    ui->connectionButton->setProperty("translationSourceText","Connect");
     ui->connectionButton->setMinimumHeight(52);
     ui->connectionButton->setIconSize(QSize(20,20));
     ui->connectionButton->setIcon(connectionButtonIcon(ConnectionButtonAction::Connect));
+    auto* mode=new QComboBox(connectionCard);mode->setObjectName("connectionModeSelector");
+    mode->addItem(tr("Normal VPN"),false);mode->addItem(tr("SOCKS proxy · other connections stay direct"),true);
+    mode->setCurrentIndex(ProxySettings::load().enabled?1:0);
+    connectionLayout->addWidget(mode);
+    auto* proxyEndpoint=new ProxyEndpointWidget(connectionCard);
+    connectionLayout->addWidget(proxyEndpoint);proxyEndpoint->setVisible(mode->currentIndex()==1);
+    connect(mode,&QComboBox::currentIndexChanged,this,[this,proxyEndpoint](int index) {
+        OcSettings s;s.setValue("Client/proxyMode",index==1);proxyEndpoint->setVisible(index==1);
+        gamingButton->setEnabled(index==0);
+        if(auto* box=findChild<QCheckBox*>("killSwitchPreference"))box->setEnabled(index==0);
+        if(index==1)gamingButton->setChecked(false);
+    });
+    connect(this,&MainWindow::proxy_configuration_locked_sig,mode,[mode](bool locked){mode->setEnabled(!locked);});
+    gamingButton->setEnabled(mode->currentIndex()==0);
+    if(auto* box=findChild<QCheckBox*>("killSwitchPreference"))box->setEnabled(mode->currentIndex()==0);
+    connect(this,&MainWindow::proxy_notice_sig,proxyEndpoint,&ProxyEndpointWidget::showNotice,Qt::QueuedConnection);
+    connect(this,&MainWindow::proxy_ready_sig,proxyEndpoint,[proxyEndpoint](const QString& endpoints){proxyEndpoint->setEndpoints(endpoints);},Qt::QueuedConnection);
+    connect(this,&MainWindow::vpn_status_changed_sig,this,[this,mode,proxyEndpoint](int state) {
+        mode->setEnabled(state==STATUS_DISCONNECTED && !connectionWanted);
+        if(state==STATUS_DISCONNECTED){proxyEndpoint->clearEndpoints();gamingButton->setEnabled(mode->currentIndex()==0);}
+    });
     connectionLayout->addWidget(ui->connectionButton);
     auto* summaryCard = card(ui->tabWidget_main,summaryLayout); columns->addWidget(summaryCard,2);
     summaryLayout->addWidget(text(tr("CONNECTION OVERVIEW"),"eyebrow",summaryCard));
-    auto* profileTitle = text(tr("No server selected"),"section",summaryCard); summaryLayout->addWidget(profileTitle);
+    auto* profileTitle = text(tr("No server selected"),"section",summaryCard); profileTitle->setProperty("translationExcluded",true); summaryLayout->addWidget(profileTitle);
     auto* gateway = text(tr("Your saved servers will appear here."),"muted",summaryCard); gateway->setTextInteractionFlags(Qt::TextSelectableByMouse); summaryLayout->addWidget(gateway);
     auto* line = new QFrame(summaryCard); line->setObjectName("divider"); line->setFixedHeight(1); summaryLayout->addWidget(line);
     summaryLayout->addWidget(text(tr("PROTOCOL"),"eyebrow",summaryCard));
@@ -121,6 +154,55 @@ void MainWindow::buildClientShell()
     ClientLanguage::technical(protocol);
     summaryLayout->addWidget(text(tr("TRAFFIC POLICY"),"eyebrow",summaryCard));
     auto* routeSummary = text(tr("Server defaults"),"value",summaryCard); summaryLayout->addWidget(routeSummary);
+    summaryLayout->addWidget(text(tr("IP before connection"),"eyebrow",summaryCard));
+    auto* beforeIp=text(tr("Unknown"),"value",summaryCard); beforeIp->setTextFormat(Qt::PlainText); summaryLayout->addWidget(beforeIp);
+    summaryLayout->addWidget(text(tr("VPN exit IP · approximate location"),"eyebrow",summaryCard));
+    auto* exitIp=text(tr("Not connected"),"value",summaryCard); exitIp->setTextFormat(Qt::PlainText); summaryLayout->addWidget(exitIp);
+    auto* countryFlag=new QLabel(summaryCard); countryFlag->hide(); summaryLayout->addWidget(countryFlag);
+    auto* refreshIp=new QPushButton(tr("Refresh IP"),summaryCard); refreshIp->setProperty("quiet",true); summaryLayout->addWidget(refreshIp);
+    refreshIp->setToolTip(tr("Uses Country.is over verified HTTPS. IP location is approximate. No account information is sent."));
+    auto generation=std::make_shared<int>(0);
+    auto busy=std::make_shared<bool>(false);
+    auto lastLookup=std::make_shared<qint64>(0);
+    auto cancel=std::make_shared<std::shared_ptr<std::atomic_bool>>(std::make_shared<std::atomic_bool>(false));
+    connect(this,&QObject::destroyed,[cancel]() { (*cancel)->store(true); });
+    const auto lookup=[this,beforeIp,exitIp,countryFlag,refreshIp,generation,busy,lastLookup,cancel]() {
+        if(qApp->property("diagnosticMode").toBool() || QCoreApplication::arguments().contains("--preview-dir")) return;
+        const bool online=currentConnectionState==STATUS_CONNECTED;
+        if(online && property("proxyModeActive").toBool()) {exitIp->setText(tr("SOCKS tunnel active · system stays direct"));return;}
+
+        if(!online && currentConnectionState!=STATUS_DISCONNECTED) return;
+        if(*busy || QDateTime::currentMSecsSinceEpoch()-*lastLookup<10000) return;
+        *lastLookup=QDateTime::currentMSecsSinceEpoch(); *busy=true; refreshIp->setEnabled(false);
+        const int request=++*generation;
+        *cancel=std::make_shared<std::atomic_bool>(false); const auto cancelled=*cancel;
+        auto* label=online ? exitIp : beforeIp; label->setText(tr("Checking…"));
+        const QString tunnel=online ? activeInterface : QString();
+        auto* watcher=new QFutureWatcher<QJsonObject>(this);
+        connect(watcher,&QFutureWatcher<QJsonObject>::finished,this,[=]() {
+            *busy=false; refreshIp->setEnabled(true);
+            const auto value=watcher->result(); watcher->deleteLater();
+            if(request!=*generation) { if(currentConnectionState==STATUS_CONNECTED) QTimer::singleShot(100,refreshIp,&QPushButton::click); return; }
+            if(value.isEmpty()) {label->setText(tr("Unknown · lookup unavailable")); return;}
+            const QString code=value.value("country").toString();
+            const QString city=value.value("city").toString();
+            QString country=code;
+            for(const auto& locale:QLocale::matchingLocales(QLocale::AnyLanguage,QLocale::AnyScript,QLocale::AnyTerritory))
+                if(QLocale::territoryToCode(locale.territory())==code) {country=QLocale::territoryToString(locale.territory()); break;}
+            label->setText(value.value("ip").toString()+"\n"+country+(city.isEmpty() ? QString() : " · "+city));
+            if(online) { countryFlag->setPixmap(QPixmap(":/flags/"+code.toLower()+".png")); countryFlag->setVisible(!countryFlag->pixmap().isNull()); }
+            label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        });
+        watcher->setFuture(QtConcurrent::run([tunnel,cancelled] {return PublicIpLookup::fetch(tunnel,cancelled);}));
+    };
+    connect(refreshIp,&QPushButton::clicked,this,lookup);
+    connect(this,&MainWindow::vpn_status_changed_sig,this,[=](int state) {
+        ++*generation;
+        (*cancel)->store(true); countryFlag->hide();
+        if(state!=STATUS_CONNECTED) exitIp->setText(tr("Not connected"));
+        if(state==STATUS_CONNECTED) { *lastLookup=0; QTimer::singleShot(1100,this,lookup); }
+    });
+    QTimer::singleShot(500,this,lookup);
     summaryLayout->addStretch();
     auto* stats = new QHBoxLayout;
     auto* downLayout = new QVBoxLayout; downLayout->addWidget(text(tr("↓  RECEIVED"),"eyebrow",summaryCard));
@@ -129,19 +211,22 @@ void MainWindow::buildClientShell()
     auto* sent = text("—","metric",summaryCard); upLayout->addWidget(sent); stats->addLayout(upLayout); summaryLayout->addLayout(stats);
     ui->viewLogButton->setText(tr("Open connection log  ↗")); ui->viewLogButton->setIcon(QIcon()); ui->viewLogButton->setProperty("quiet",true); summaryLayout->addWidget(ui->viewLogButton);
 
-    auto* features = new QHBoxLayout; features->setSpacing(18); home->addLayout(features);
+    auto* features = new QHBoxLayout; features->setSpacing(10); home->addLayout(features);
     QVBoxLayout *gamingLayout, *trafficLayout;
     auto* gamingCard = card(ui->tabWidget_main,gamingLayout); features->addWidget(gamingCard,1);
     auto* gameRow = new QHBoxLayout; gameRow->addWidget(text(tr("Gaming mode"),"section",gamingCard),1); gameRow->addWidget(gamingButton); gamingLayout->addLayout(gameRow);
     gamingButton->setText(tr("Enable")); gamingButton->setMinimumWidth(94);
-    gamingLayout->addWidget(text(tr("Adjust tunnel packet size. Available while connected; restored on disconnect."),"muted",gamingCard));
+    auto* gamingDetails=text(tr("Gaming mode is off."),"muted",gamingCard);
+    gamingDetails->setTextFormat(Qt::PlainText); gamingDetails->setObjectName("gamingQualitySummary"); gamingLayout->addWidget(gamingDetails); gamingDetails->setMaximumHeight(52);
+    connect(gamingSession,&GamingSession::updated,gamingDetails,[gamingDetails](const QString& value) {gamingDetails->setText(value); gamingDetails->setToolTip(value);});
     connect(gamingButton,&QPushButton::toggled,this,[this](bool active) { gamingButton->setText(active ? tr("Enabled") : tr("Enable")); });
     auto* trafficCard = card(ui->tabWidget_main,trafficLayout); features->addWidget(trafficCard,1);
     auto* trafficRow = new QHBoxLayout; trafficRow->addWidget(text(tr("Traffic control"),"section",trafficCard),1);
     auto* rules = new QPushButton(tr("Manage  ↗"),trafficCard); rules->setProperty("quiet",true); trafficRow->addWidget(rules); trafficLayout->addLayout(trafficRow);
     trafficLayout->addWidget(text(tr("Choose which apps, domains and IP addresses use the VPN."),"muted",trafficCard));
-    const auto updateProfile = [this,profileTitle,gateway,protocol,routeSummary,rules]() {
+    const auto updateProfile = [this,profileTitle,gateway,protocol,routeSummary,rules,mode]() {
         const QString name = ui->serverList->currentText(); OcSettings settings;
+        profileTitle->setProperty("translationExcluded",!name.isEmpty());
         profileTitle->setText(name.isEmpty() ? tr("No server selected") : name);
         gateway->setText(name.isEmpty() ? tr("Add a server using your provider's existing address.") : settings.value("server:"+name+"/server").toString());
         gateway->setProperty("technical",!name.isEmpty());
@@ -150,10 +235,12 @@ void MainWindow::buildClientShell()
         protocol->setText(name.isEmpty() ? "—" : settings.value("server:"+name+"/protocol-name","anyconnect").toString().toUpper());
         const auto policy = TrafficPolicy::load(name); int count=0; for(const auto& rule:policy.rules) if(rule.enabled) ++count;
         routeSummary->setText(name.isEmpty() ? "—" : (policy.mode == "full" ? tr("All traffic through VPN") : policy.mode == "selected" ? tr("Selected traffic only") : tr("Server defaults")) + (count ? tr(" · %1 rules").arg(count) : QString()));
-        rules->setEnabled(!name.isEmpty() && ui->serverList->isEnabled());
+        if(mode->currentIndex()==1)routeSummary->setText(tr("Only SOCKS clients use the VPN"));
+        rules->setEnabled(mode->currentIndex()==0 && !name.isEmpty() && ui->serverList->isEnabled());
     };
     connect(ui->serverList,&QComboBox::currentTextChanged,this,[updateProfile](const QString&) { updateProfile(); });
     connect(rules,&QPushButton::clicked,this,[this,updateProfile]() { TrafficPolicyDialog dialog(ui->serverList->currentText(),this); dialog.exec(); updateProfile(); });
+    connect(mode,&QComboBox::currentIndexChanged,this,[updateProfile](int){updateProfile();});
     updateProfile();
     connect(this,&MainWindow::stats_changed_sig,this,[received,sent](const QString& tx,const QString& rx,const QString&) { received->setText(rx); sent->setText(tx); });
 
@@ -161,7 +248,7 @@ void MainWindow::buildClientShell()
     ui->tabWidget->tabBar()->hide(); ui->tabWidget->setObjectName("pageStack"); ui->menuBar->hide();
     ui->horizontalLayout->removeWidget(ui->tabWidget); delete ui->horizontalLayout;
     auto* shell = new QHBoxLayout(ui->centralWidget); shell->setContentsMargins(0,0,0,0); shell->setSpacing(0);
-    auto* sidebar = new QFrame(ui->centralWidget); sidebar->setObjectName("sidebar"); sidebar->setFixedWidth(204); shell->addWidget(sidebar);
+    auto* sidebar = new QFrame(ui->centralWidget); sidebar->setObjectName("sidebar"); sidebar->setFixedWidth(170); shell->addWidget(sidebar);
     auto* rail = new QVBoxLayout(sidebar); rail->setContentsMargins(18,28,18,22); rail->setSpacing(8);
     auto* wordmark = text("Gozarno","wordmark",sidebar); wordmark->setObjectName("brandWordmark"); rail->addWidget(wordmark);
     rail->addWidget(text(tr("VPN, on your terms."),"railMuted",sidebar)); rail->addSpacing(38);
@@ -181,7 +268,7 @@ void MainWindow::buildClientShell()
     auto* trayState = text(tr("●  Not connected"),"railStatus",sidebar); rail->addWidget(trayState);
     rail->addWidget(text(tr("Gozarno VPN")+" · "+qApp->applicationVersion(),"railMuted",sidebar));
     auto* body = new QWidget(ui->centralWidget); body->setObjectName("body"); shell->addWidget(body,1);
-    auto* bodyLayout = new QVBoxLayout(body); bodyLayout->setContentsMargins(30,28,30,24); bodyLayout->setSpacing(24);
+    auto* bodyLayout = new QVBoxLayout(body); bodyLayout->setContentsMargins(18,16,18,12); bodyLayout->setSpacing(10);
     auto* headingRow = new QHBoxLayout;
     auto* headings = new QVBoxLayout; headings->setSpacing(7);
     auto* pageTitle = text(names[0],"pageTitle",body); auto* pageHint = text(descriptions[0],"muted",body); headings->addWidget(pageTitle); headings->addWidget(pageHint); headingRow->addLayout(headings,1);
@@ -199,13 +286,21 @@ void MainWindow::buildClientShell()
         const bool online=state==STATUS_CONNECTED;
         badge->setText(online ? tr("●  CONNECTED") : state==STATUS_CONNECTING ? tr("●  CONNECTING") : state==STATUS_DISCONNECTING ? tr("●  DISCONNECTING") : tr("●  DISCONNECTED"));
         stateTitle->setText(online ? tr("You're connected") : state==STATUS_CONNECTING ? tr("Establishing connection") : state==STATUS_DISCONNECTING ? tr("Closing your session") : tr("Ready when you are"));
-        stateHint->setText(online ? tr("Your VPN session is active.") : state==STATUS_CONNECTING ? tr("Authenticating with your selected server…") : state==STATUS_DISCONNECTING ? tr("Restoring your local connection settings…") : tr("Choose a server to start your secure connection."));
+        stateHint->setText(online ? (property("proxyModeActive").toBool()?tr("SOCKS is ready. Other connections stay direct."):tr("Your VPN session is active.")) : state==STATUS_CONNECTING ? tr("Authenticating with your selected server…") : state==STATUS_DISCONNECTING ? tr("Restoring your local connection settings…") : tr("Choose a server to start your secure connection."));
         trayState->setText(online ? tr("●  Connected") : state==STATUS_CONNECTING ? tr("●  Connecting") : tr("●  Not connected"));
         badge->setProperty("online",online); badge->style()->unpolish(badge); badge->style()->polish(badge);
         if(state==STATUS_DISCONNECTED) { received->setText("—"); sent->setText("—"); }
     });
     // Card structure for settings; the existing controls retain their behavior.
+    connect(this, &MainWindow::connectivity_health_sig, this, [=](bool healthy) {
+        badge->setText(healthy ? tr("●  CONNECTED") : tr("●  CONNECTION INTERRUPTED"));
+        stateTitle->setText(healthy ? tr("You're connected") : tr("Connection interrupted"));
+        stateHint->setText(healthy ? tr("Tunnel connectivity verified.") : tr("Checking the tunnel and attempting recovery if enabled…"));
+        trayState->setText(healthy ? tr("●  Connected") : tr("●  Connection interrupted"));
+        badge->setProperty("online", healthy); badge->style()->unpolish(badge); badge->style()->polish(badge);
+    });
     auto* preferences=ui->tabWidget->widget(3);
+    connect(this,&MainWindow::diagnosis_message_sig,stateHint,&QLabel::setText);
     auto* oldLayout=qobject_cast<QVBoxLayout*>(preferences->layout());
     QLayout* form=nullptr;
     while(oldLayout && oldLayout->count()) {
@@ -214,19 +309,66 @@ void MainWindow::buildClientShell()
         else { if(item->widget()) item->widget()->hide(); delete item; }
     }
     delete oldLayout;
-    auto* settingsLayout=new QVBoxLayout(preferences); settingsLayout->setContentsMargins(0,0,0,0); settingsLayout->setSpacing(18);
+    auto* settingsLayout=new QVBoxLayout(preferences); settingsLayout->setContentsMargins(0,0,0,0); settingsLayout->setSpacing(10);
     auto* settingsSections=new QTabWidget(preferences); settingsSections->setObjectName("settingsSections"); settingsLayout->addWidget(settingsSections);
-    auto* general=new QWidget(settingsSections); auto* generalLayout=new QVBoxLayout(general); generalLayout->setContentsMargins(14,18,14,14); generalLayout->setSpacing(18);
-    settingsSections->addTab(general,tr("General"));
-    auto* components=new ComponentsWidget(settingsSections); settingsSections->addTab(components,tr("Components & prerequisites").replace("&","&&"));
-    QVBoxLayout* settingsCardLayout; auto* settingsCard=card(general,settingsCardLayout); generalLayout->addWidget(settingsCard);
-    settingsCardLayout->addWidget(text(tr("Client preferences"),"section",settingsCard));
-    settingsCardLayout->addWidget(text(tr("Changes are saved automatically on this device."),"muted",settingsCard));
-    if(form) { form->setParent(nullptr); settingsCardLayout->addLayout(form); form->setSpacing(12); }
-    QVBoxLayout* noteLayout; auto* noteCard=card(general,noteLayout); generalLayout->addWidget(noteCard);
-    noteLayout->addWidget(text(tr("Credentials stay on your device"),"section",noteCard));
-    noteLayout->addWidget(text(tr("Saving a password is optional. Saved passwords use Windows encryption and are excluded from exported server catalogs."),"muted",noteCard));
-    generalLayout->addStretch();
+    auto* sourceForm=qobject_cast<QFormLayout*>(form);
+    const QList<QPair<QString,QList<int>>> groups{
+        {tr("Appearance & startup"),{8,9,12,13,14}},
+        {tr("Connection & protection"),{0,1,2,3,4,5}},
+        {tr("Gaming & routing"),{10,11}},
+        {tr("Diagnostics"),{6,7}}
+    };
+    QList<QFormLayout*> destinations;
+    for(const auto& group:groups) {
+        auto* section=new QWidget(settingsSections); auto* box=new QVBoxLayout(section);
+        box->setContentsMargins(18,18,18,18); box->setSpacing(12);
+        box->addWidget(text(tr("Changes are saved automatically on this device."),"muted",section));
+        auto* fields=new QFormLayout; fields->setSpacing(10); fields->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow); box->addLayout(fields); box->addStretch();
+        destinations.append(fields); settingsSections->addTab(section,group.first);
+    }
+    if(sourceForm) {
+        // Take rows backwards so the original row indexes stay stable.
+        for(int row=sourceForm->rowCount()-1;row>=0;--row) {
+            auto items=sourceForm->takeRow(row); int section=0;
+            for(int i=0;i<groups.size();++i) if(groups[i].second.contains(row)) section=i;
+            auto* fields=destinations[section];
+            if(items.labelItem && items.labelItem->widget()) fields->insertRow(0,items.labelItem->widget(),items.fieldItem->widget());
+            else if(items.fieldItem && items.fieldItem->widget()) fields->insertRow(0,items.fieldItem->widget());
+            delete items.labelItem; delete items.fieldItem;
+        }
+        delete sourceForm;
+    }
+    auto* proxyPage=new QWidget(settingsSections);auto* proxyLayout=new QVBoxLayout(proxyPage);
+    proxyLayout->setContentsMargins(18,18,18,18);auto* proxyForm=new QFormLayout;
+    proxyLayout->addWidget(text(tr("Select SOCKS mode on the Connection page. Changes apply to the next connection."),"muted",proxyPage));
+    const auto proxyConfig=ProxySettings::load();
+    auto* proxyPort=new QSpinBox(proxyPage);proxyPort->setRange(1,65535);proxyPort->setValue(proxyConfig.port);ClientLanguage::technical(proxyPort);
+    auto* shareLan=new QCheckBox(tr("Share SOCKS on the local network (LAN)"),proxyPage);shareLan->setChecked(proxyConfig.lan);
+    auto* lanAddress=new QComboBox(proxyPage);ClientLanguage::technical(lanAddress);
+    for(const auto& iface:QNetworkInterface::allInterfaces()) {
+        if(!iface.flags().testFlag(QNetworkInterface::IsUp) || (iface.type()!=QNetworkInterface::Ethernet && iface.type()!=QNetworkInterface::Wifi))continue;
+        for(const auto& entry:iface.addressEntries())if(entry.ip().protocol()==QAbstractSocket::IPv4Protocol && !entry.ip().isLoopback() && !entry.ip().isLinkLocal())
+            lanAddress->addItem(iface.humanReadableName()+" · "+entry.ip().toString(),entry.ip().toString());
+    }
+    int savedAddress=lanAddress->findData(proxyConfig.lanAddress);if(savedAddress>=0)lanAddress->setCurrentIndex(savedAddress);
+    auto* proxyUser=new QLineEdit(proxyConfig.username,proxyPage);ClientLanguage::technical(proxyUser);
+    auto* proxyPassword=new QLineEdit(proxyConfig.password,proxyPage);proxyPassword->setEchoMode(QLineEdit::Password);ClientLanguage::technical(proxyPassword);
+    proxyForm->addRow(tr("SOCKS port"),proxyPort);proxyForm->addRow(shareLan);
+    proxyForm->addRow(tr("LAN address"),lanAddress);proxyForm->addRow(tr("Proxy username"),proxyUser);proxyForm->addRow(tr("Proxy password"),proxyPassword);
+    proxyLayout->addLayout(proxyForm);
+    proxyLayout->addWidget(text(tr("Local: 127.0.0.1. LAN requires a separate proxy password (8+ characters). Windows Firewall must allow the chosen port on your private LAN; this mode never changes firewall policy."),"muted",proxyPage));
+    proxyLayout->addWidget(text(tr("Only IPv4 destinations are supported in this preview. Use remote DNS in your SOCKS client. Route, DNS, system proxy and physical MTU remain unchanged."),"muted",proxyPage));
+    auto* saveProxy=new QPushButton(tr("Save proxy settings"),proxyPage);proxyLayout->addWidget(saveProxy);proxyLayout->addStretch();
+    connect(saveProxy,&QPushButton::clicked,this,[=] {
+        auto config=ProxySettings::load();config.port=proxyPort->value();config.lan=shareLan->isChecked();
+        config.lanAddress=lanAddress->currentData().toString();config.username=proxyUser->text();config.password=proxyPassword->text();
+        QString error;if(!config.save(error))QMessageBox::warning(this,tr("SOCKS proxy"),error);
+        else QMessageBox::information(this,tr("SOCKS proxy"),tr("Proxy settings saved. They apply to the next connection."));
+    });
+    connect(this,&MainWindow::vpn_status_changed_sig,proxyPage,[this,proxyPage](int state){proxyPage->setEnabled(state==STATUS_DISCONNECTED && !connectionWanted);});
+    connect(this,&MainWindow::proxy_configuration_locked_sig,proxyPage,[proxyPage](bool locked){proxyPage->setEnabled(!locked);});
+    settingsSections->addTab(proxyPage,tr("SOCKS proxy"));
+    auto* components=new ComponentsWidget(settingsSections); settingsSections->addTab(components,tr("Components"));
     if(auto* checkButton=preferences->findChild<QPushButton*>("engineCheckButton")) {
         disconnect(checkButton,nullptr,this,nullptr);
         connect(checkButton,&QPushButton::clicked,components,[settingsSections,components]{ settingsSections->setCurrentWidget(components); components->refresh(); });
@@ -251,16 +393,6 @@ void MainWindow::buildClientShell()
     connect(this,&MainWindow::vpn_status_changed_sig,sessionActivity,&SessionActivity::setConnectionState,Qt::QueuedConnection);
     connect(this,&MainWindow::traffic_totals_sig,sessionActivity,&SessionActivity::updateTraffic,Qt::QueuedConnection);
     OcSettings settings; applyClientTheme(settings.value("Client/darkTheme",true).toBool());
-    for(int index=0;index<ui->tabWidget->count();++index) {
-        auto* page=ui->tabWidget->widget(index); const QString title=ui->tabWidget->tabText(index);
-        page->layout()->setSizeConstraint(QLayout::SetMinimumSize);
-        if(index==0) page->setMinimumHeight(610);
-        if(index==3) page->setMinimumHeight(590);
-        ui->tabWidget->removeTab(index);
-        auto* scroll=new QScrollArea(ui->tabWidget); scroll->setObjectName("pageScroll"); scroll->setFrameShape(QFrame::NoFrame);
-        scroll->setWidgetResizable(true); scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff); scroll->setWidget(page);
-        ui->tabWidget->insertTab(index,scroll,title);
-    }
     ui->tabWidget->setCurrentIndex(0);
     reload_settings();
     if(ui->serverList->count()>0 && ui->serverList->currentIndex()<0) ui->serverList->setCurrentIndex(0);

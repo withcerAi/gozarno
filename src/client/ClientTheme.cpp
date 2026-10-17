@@ -42,7 +42,7 @@ void applyGozarnoTheme(bool dark)
         QPushButton#navButton:checked { background: #1b3c31; color: #78e4bf; font-weight: 600; }
         QTabWidget#pageStack::pane { border: none; background: transparent; }
         QTabWidget::pane { border: 1px solid %5; border-radius: 12px; background: %2; }
-        QTabBar::tab { background: transparent; color: %4; padding: 12px 20px; border-bottom: 2px solid transparent; }
+        QTabBar::tab { background: transparent; color: %4; padding: 9px 12px; border-bottom: 2px solid transparent; }
         QTabBar::tab:selected { color: %3; border-bottom: 2px solid #64deb4; }
         QScrollArea#pageScroll, QScrollArea#pageScroll > QWidget > QWidget { background: transparent; border: none; }
         QFrame#connectionCard { background: #102b24; border: 1px solid #25483d; border-radius: 18px; }
@@ -50,14 +50,17 @@ void applyGozarnoTheme(bool dark)
         QLabel[role="badge"] { color: #bdd6ca; font-size: 10px; font-weight: 600; letter-spacing: 1px; }
         QLabel[role="badge"][online="true"] { color: #70edc3; }
         QFrame#divider { background: %5; border: none; }
-        QLineEdit, QComboBox, QSpinBox { background: %6; border: 2px solid %5; border-radius: 9px; padding: 10px 12px; min-height: 20px; selection-background-color: #286d59; }
+        QLineEdit, QComboBox, QSpinBox { background: %6; border: 2px solid %5; border-radius: 9px; padding: 6px 9px; min-height: 20px; selection-background-color: #286d59; }
         QComboBox::drop-down { border: none; width: 26px; }
         QComboBox QAbstractItemView, QMenu { background: %2; border: 1px solid %5; padding: 6px; selection-background-color: #286d59; color: %3; }
-        QPushButton, QToolButton { background: %2; border: 2px solid %5; border-radius: 9px; padding: 10px 14px; font-weight: 500; }
+        QPushButton, QToolButton { background: %2; border: 2px solid %5; border-radius: 9px; padding: 7px 10px; font-weight: 500; }
         QPushButton:hover, QToolButton:hover { background: %6; border-color: #5e9d89; }
         QPushButton:pressed { background: #245b48; color: #ffffff; }
         QPushButton:checked { background: #254f40; color: #7ce4bd; border-color: #438c70; }
         QPushButton[quiet="true"] { background: transparent; }
+        QPushButton[proxyEndpointButton="true"] { background: %6; color: %3; border: 1px solid #438c70; border-radius: 10px; padding: 5px 12px; text-align: center; }
+        QPushButton[proxyEndpointButton="true"]:hover { background: #245b48; color: #ffffff; border: 1px solid #64deb4; }
+
         QPushButton[primary="true"], QPushButton#connectionButton { background: #64deb4; color: #08271c; border: 1px solid #64deb4; font-weight: 600; }
         QPushButton[primary="true"]:hover, QPushButton#connectionButton:hover { background: #85eac6; border-color: #85eac6; }
         QPushButton:disabled, QToolButton:disabled { color: #7c9188; border-color: %5; background: %6; }
@@ -65,7 +68,7 @@ void applyGozarnoTheme(bool dark)
         QTableWidget { background: %2; border: 1px solid %5; border-radius: 12px; gridline-color: %5; selection-background-color: #244e40; selection-color: #f3fff9; }
         QHeaderView::section { background: %6; color: %4; border: none; border-bottom: 1px solid %5; padding: 14px 10px; font-weight: 500; }
         QTableWidget::item { padding: 10px; border: none; }
-        QCheckBox { spacing: 12px; padding: 8px 0; min-height: 22px; }
+        QCheckBox { spacing: 12px; padding: 4px 0; min-height: 20px; }
         QCheckBox::indicator, QGroupBox::indicator { width: 20px; height: 20px; }
         QCheckBox::indicator:unchecked, QGroupBox::indicator:unchecked { image: url(:/images/gozarno/check-off.png); }
         QCheckBox::indicator:checked, QGroupBox::indicator:checked { image: url(:/images/gozarno/check-on.png); }
@@ -78,6 +81,8 @@ void applyGozarnoTheme(bool dark)
         QLineEdit:focus, QComboBox:focus, QPushButton:focus, QToolButton:focus, QSpinBox:focus { border: 2px solid #68c6a6; }
         QToolTip { background: %2; color: %3; border: 1px solid %5; padding: 8px; }
     )CSS").arg(background,surface,foreground,muted,border,field)
+         .replace("#eff8f4",dark?"#eff8f4":"#173b30").replace("#bdd6ca",dark?"#bdd6ca":"#416857").replace("#70edc3",dark?"#70edc3":"#156246")
+        .replace("#102b24",dark?"#102b24":"#e5f5ed").replace("#25483d",dark?"#25483d":"#b4d4c4").replace("#a0bdb1",dark?"#a0bdb1":"#416857")
         .replace("text-align: left",ClientLanguage::isPersian() ? "text-align: right" : "text-align: left")
         .replace("padding-left: 12px",ClientLanguage::isPersian() ? "padding-right: 12px" : "padding-left: 12px")
         .replace("letter-spacing: 1px",ClientLanguage::isPersian() ? "letter-spacing: 0px" : "letter-spacing: 1px"));

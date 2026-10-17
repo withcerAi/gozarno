@@ -18,6 +18,7 @@
  */
 
 #include "vpninfo.h"
+#include <QHostInfo>
 #include "config.h"
 #include "dialog/MyCertMsgBox.h"
 #include "dialog/MyInputDialog.h"
@@ -28,6 +29,12 @@
 #include "server_storage.h"
 #include "client/VpnRoutes.h"
 #include "client/AppRouter.h"
+#include "client/ProxyStack.h"
+#include <QEventLoop>
+#ifdef _WIN32
+#include <windows.h>
+#endif
+#include "client/GamingProfile.h"
 
 #include <QDir>
 #include <QHash>
@@ -53,6 +60,7 @@ static void stats_vfn(void* privdata, const struct oc_stats* stats)
     }
 
     vpn->m->updateStats(stats, dtls);
+    vpn->restoreGamingRoutingIfDisabled();
 }
 
 // privdata is set by the caller to be of type VpnInfo
@@ -116,6 +124,7 @@ static int process_auth_form(void* privdata, struct oc_auth_form* form)
             openconnect_set_option_value(&select_opt->form,
                 vpn->ss->get_groupname().toUtf8().data());
         } else {
+            if (vpn->diagnosticMode) goto fail;
             {
                 MyInputDialog dialog(vpn->m,
                     QLatin1String("Auth group selection"),
@@ -160,6 +169,7 @@ static int process_auth_form(void* privdata, struct oc_auth_form* form)
             if (select_opt == form->authgroup_opt) {
                 continue;
             }
+            if (vpn->diagnosticMode) goto fail;
 
             for (i = 0; i < select_opt->nr_choices; i++) {
                 items << select_opt->choices[i]->label;
@@ -197,6 +207,7 @@ static int process_auth_form(void* privdata, struct oc_auth_form* form)
             }
 
             do {
+                if (vpn->diagnosticMode) goto fail;
                 MyInputDialog dialog(vpn->m,
                     QLatin1String("Username input"),
                     QString::fromUtf8(opt->label),
@@ -230,6 +241,7 @@ static int process_auth_form(void* privdata, struct oc_auth_form* form)
                 continue;
             }
 
+            if (vpn->diagnosticMode) goto fail;
             MyInputDialog dialog(vpn->m,
                 QLatin1String("Password input"),
                 QString::fromUtf8(opt->label),
@@ -298,6 +310,7 @@ static int validate_peer_cert(void* privdata, const char* reason)
     }
 
     bool save = false;
+    if (vpn->diagnosticMode && ret != 0) return -1;
 
     // If the existing server PIN uses an older algorithm than the current
     // we use, force save to update it to the latest.
@@ -348,7 +361,7 @@ static int validate_peer_cert(void* privdata, const char* reason)
         return -1;
     }
 
-    if (save != false) {
+    if (save != false && !vpn->diagnosticMode) {
         Logger::instance().addMessage(QObject::tr("saving peer's public key"));
         ret = gnutls_store_pubkey(reinterpret_cast<const char*>(&tdb), tdb.tdb,
             "", "", GNUTLS_CRT_X509, &raw, 0, 0);
@@ -390,6 +403,10 @@ static void setup_tun_vfn(void* privdata)
 {
     VpnInfo* vpn = static_cast<VpnInfo*>(privdata);
 
+    if (vpn->isProxyMode()) {
+        if (!vpn->setupProxy()) vpn->clientFailure=true;
+        return; // No TUN, vpnc script, Windows routes or DNS in proxy mode.
+    }
     QByteArray vpncScriptFullPath;
     QByteArray interface_name;
 
@@ -454,8 +471,14 @@ static inline int set_sock_block(int fd)
 #endif
 }
 
-VpnInfo::VpnInfo(QString name, StoredServer* ss, MainWindow* m)
+VpnInfo::VpnInfo(QString name, StoredServer* ss, MainWindow* m,const QStringList& recoveryHosts)
 {
+    diagnosticMode = QCoreApplication::instance()->property("diagnosticMode").toBool();
+    if (diagnosticMode) ss->set_batch_mode(true);
+    this->recoveryHosts = recoveryHosts;
+    OcSettings clientSettings;
+    proxySettings=ProxySettings::load();
+    protectionEnabled = clientSettings.value("Client/killSwitch", false).toBool() && !diagnosticMode && !proxySettings.enabled;
     this->vpninfo = openconnect_vpninfo_new(name.toUtf8().data(), validate_peer_cert, nullptr,
         process_auth_form, progress_vfn, this);
     if (this->vpninfo == nullptr) {
@@ -498,10 +521,13 @@ VpnInfo::VpnInfo(QString name, StoredServer* ss, MainWindow* m)
     openconnect_set_protocol(vpninfo, ss->get_protocol_name().toUtf8().data());
 
     openconnect_set_setup_tun_handler(vpninfo, setup_tun_vfn);
+    if (clientSettings.value("Client/healthCheck", true).toBool()) openconnect_set_dpd(vpninfo, 30);
 }
 
 VpnInfo::~VpnInfo()
 {
+    if(proxyStack) emit m->proxy_diagnostics_sig(proxyStack->diagnostics());
+    proxyStack.reset();
     if (appRouter) appRouter->stop();
     if (routes) routes->restore();
     if (vpninfo != nullptr) {
@@ -528,9 +554,27 @@ int VpnInfo::connect()
     QString cert_file, key_file;
     QString ca_file;
 
-    if (!routesPrepared) {
+    if (proxySettings.enabled) {
         QString error;
+        if (!proxySettings.validate(error)) {last_err=error;clientFailure=true;return -1;}
+#ifdef _WIN32
+        const auto module=GetModuleHandleW(L"libopenconnect-5.dll");
+        if (!module || !GetProcAddress(module,"gozarno_openconnect_packet_io_v1")) {
+            last_err=QObject::tr("The bundled VPN engine does not support isolated SOCKS mode. No system routing was changed.");clientFailure=true;return -1;
+        }
+#else
+        last_err=QObject::tr("Isolated SOCKS mode is currently supported on Windows only.");clientFailure=true;return -1;
+#endif
+    }
+    if (!proxySettings.enabled && !routesPrepared) {
+        QString error;
+        // Resolve only user-approved fallback gateways before protection blocks
+        // direct DNS. Never reuse the current provider's credentials elsewhere.
+        if (protectionEnabled) for (const auto& host : recoveryHosts)
+            for (const auto& address : QHostInfo::fromName(host).addresses())
+                if (!recoveryPeers.contains(address)) recoveryPeers.append(address);
         trafficPolicy = TrafficPolicy::load(ss->get_label(), &error);
+        baseTrafficPolicy=trafficPolicy;
         if (!error.isEmpty() || !AppRouter::preflight(trafficPolicy, error)) {
             last_err = error; clientFailure = true; return -1;
         }
@@ -540,7 +584,9 @@ int VpnInfo::connect()
     }
 
     //disable DTLS early on if specified on profile
-    if (this->ss->get_disable_udp() == true) {
+    // SOCKS uses reliable CSTP/TLS. Its inner UDP relay still carries UDP packets.
+    // Decide before authentication: OpenConnect cannot disable DTLS after CSTP.
+    if (proxySettings.enabled || this->ss->get_disable_udp() == true) {
         ret = openconnect_disable_dtls(vpninfo);
         if (ret != 0) {
             this->last_err = QObject::tr("Error disabling DTLS (%1)").arg(ret);
@@ -590,7 +636,7 @@ int VpnInfo::connect()
         return ret;
     }
 
-    if (this->ss->get_disable_udp() != true) {
+    if (!proxySettings.enabled && this->ss->get_disable_udp() != true) {
         ret = openconnect_setup_dtls(vpninfo, ss->get_dtls_reconnect_timeout());
 
         if (ret != 0) {
@@ -614,6 +660,35 @@ int VpnInfo::connect()
     return 0;
 }
 
+bool VpnInfo::setupProxy()
+{
+    if(proxyStack) return true;
+    const struct oc_ip_info* info=nullptr;
+    if(openconnect_get_ip_info(vpninfo,&info,nullptr,nullptr)!=0 || !info) {
+        last_err=QObject::tr("The VPN server did not provide proxy tunnel configuration.");return false;
+    }
+    // Qt's event dispatcher belongs to this worker, never the UI thread.
+    QEventLoop dispatcher;
+    QStringList dns;
+    for(const auto* entry:info->dns)if(entry)dns.append(QString::fromUtf8(entry));
+    proxyStack.reset(new ProxyStack);
+    proxyStack->setNoticeHandler([window=m](const QString& message){emit window->proxy_notice_sig(message);});
+    if(!proxyStack->start(info->addr?QString::fromUtf8(info->addr):QString(),info->mtu,dns,proxySettings,last_err)) {proxyStack.reset();return false;}
+#ifdef _WIN32
+    using Setup=int (*)(struct openconnect_info*,int (*)(void*,unsigned char*,int),int (*)(void*,const unsigned char*,int),void*);
+    const auto module=GetModuleHandleW(L"libopenconnect-5.dll");
+    const auto setup=module?reinterpret_cast<Setup>(reinterpret_cast<void*>(GetProcAddress(module,"gozarno_openconnect_packet_io_v1"))):nullptr;
+    if(!setup || setup(vpninfo,[](void* p,unsigned char* data,int capacity){return static_cast<ProxyStack*>(p)->readPacket(data,capacity);},
+        [](void* p,const unsigned char* data,int size){return static_cast<ProxyStack*>(p)->writePacket(data,size);},proxyStack.get())!=0) {
+        last_err=QObject::tr("Could not enable isolated packet transport. No system routing was changed.");proxyStack.reset();return false;
+    }
+#else
+    return false;
+#endif
+    emit m->proxy_ready_sig(proxyStack->endpoints());
+    return true;
+}
+
 bool VpnInfo::applyTraffic(const QString& interfaceName)
 {
     QString error;
@@ -622,6 +697,17 @@ bool VpnInfo::applyTraffic(const QString& interfaceName)
     if (openconnect_get_ip_info(vpninfo, &info, nullptr, nullptr) == 0 && info)
         for (const auto* item : info->dns) if (item) dns.append(QString::fromUtf8(item));
     if (!routes->apply(interfaceName, dns, error)) { last_err = error; return false; }
+    const char* host = openconnect_get_hostname(vpninfo);
+    const auto lookup = QHostInfo::fromName(host ? QString::fromUtf8(host) : mUrl.host());
+    if (protectionEnabled) {
+        auto approved = lookup.addresses();
+        for (const auto& peer : recoveryPeers) if (!approved.contains(peer)) approved.append(peer);
+        bool protectedTunnel = false;
+        QMetaObject::invokeMethod(m, [&] {
+            protectedTunnel = m->protectTunnel(interfaceName, approved, error);
+        }, Qt::BlockingQueuedConnection);
+        if (!protectedTunnel) { last_err = error; return false; }
+    }
     appRouter.reset(new AppRouter);
     if (!appRouter->start(trafficPolicy, *routes, error, [window = m]() {
         QMetaObject::invokeMethod(window, [window]() {
@@ -630,11 +716,25 @@ bool VpnInfo::applyTraffic(const QString& interfaceName)
         }, Qt::QueuedConnection);
     })) { last_err = error; return false; }
     emit m->tunnel_ready_sig(interfaceName);
+    emit m->tunnel_context_sig(interfaceName, dns, lookup.addresses());
     return true;
 }
 
+void VpnInfo::restoreGamingRoutingIfDisabled() {
+    if(!gamingRoutesActive || !appRouter || !routes) return;
+    OcSettings settings; if(settings.value("Client/gamingEnabled",false).toBool()) return;
+    gamingRoutesActive=false; appRouter->stop(); QString error;
+    if(!appRouter->start(baseTrafficPolicy,*routes,error,[window=m]() {
+        QMetaObject::invokeMethod(window,[window] {window->on_disconnectClicked();},Qt::QueuedConnection);
+    })) {
+        clientFailure=true;
+        QMetaObject::invokeMethod(m,[window=m,error] {emit window->client_error_sig(error); window->on_disconnectClicked();},Qt::QueuedConnection);
+    }
+    trafficPolicy=baseTrafficPolicy;
+}
 void VpnInfo::mainloop()
 {
+    QEventLoop workerDispatcher;
     while (true) {
         int ret = openconnect_mainloop(vpninfo,
             ss->get_reconnect_timeout(),

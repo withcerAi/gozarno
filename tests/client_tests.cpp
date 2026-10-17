@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <QtTest>
+#include "client/PublicIpLookup.h"
 #include <cstring>
 #include <QTemporaryDir>
 #include <QJsonArray>
@@ -8,6 +9,23 @@
 #include "client/SocksBridge.h"
 #include "client/AppRouter.h"
 #include "client/GamingMode.h"
+#include "client/GamingProfile.h"
+#include "client/GamingQuality.h"
+#include "client/GamingQos.h"
+#include "client/GamingSession.h"
+#include "client/GameDiscovery.h"
+#include "dialog/GamingDialog.h"
+#include <QUuid>
+#include <limits>
+#include "client/RecoveryPolicy.h"
+#include "client/ConnectionHealth.h"
+#include "client/KillSwitch.h"
+#include "client/FailoverPlan.h"
+#include "client/DiagnosticReport.h"
+#include "client/NetworkEvents.h"
+#include "client/PinnedProbe.h"
+#include "dialog/FallbackDialog.h"
+#include <QListWidget>
 #include "client/WindowsIpInterface.h"
 #include "client/ConnectionButtonIcon.h"
 #include "cryptdata.h"
@@ -18,6 +36,10 @@
 #include "client/ClientTheme.h"
 #include "client/ConnectionState.h"
 #include "client/ClientLanguage.h"
+#include "dialog/ProxyEndpointWidget.h"
+#include <QClipboard>
+#include <QVBoxLayout>
+#include <QComboBox>
 #include "dialog/AboutDialog.h"
 #include "dialog/TrafficPolicyDialog.h"
 #include <QJsonDocument>
@@ -35,6 +57,206 @@ class ClientTests : public QObject {
     Q_OBJECT
     QTemporaryDir directory;
 private slots:
+    void languageChangesExistingControlsWithoutResettingState() {
+        ClientLanguage::apply("en");QWidget window;QVBoxLayout layout(&window);
+        QLabel title("Connection");QPushButton button("Connect");button.setProperty("translationSourceText","Connect");QCheckBox checked("Reconnect automatically");checked.setChecked(true);
+        QComboBox mode;mode.addItem("Normal VPN",false);mode.addItem("SOCKS proxy · other connections stay direct",true);mode.setCurrentIndex(1);
+        QLineEdit input("unchanged-password");ClientLanguage::technical(&input);QLabel name("Connection");name.setProperty("translationExcluded",true);
+        const auto source=QString("Connection interrupted · retry in %1 seconds. Click Disconnect to stop.");QLabel dynamic(source.arg(5));
+        layout.addWidget(&title);layout.addWidget(&button);layout.addWidget(&checked);layout.addWidget(&mode);layout.addWidget(&input);layout.addWidget(&name);layout.addWidget(&dynamic);
+        QSignalSpy toggle(&checked,&QCheckBox::toggled);QSignalSpy selection(&mode,&QComboBox::currentIndexChanged);
+        window.show();ClientLanguage::apply("fa");QApplication::processEvents();
+        QCOMPARE(title.text(),QString::fromUtf8("اتصال"));QCOMPARE(button.text(),QObject::tr("Connect"));QCOMPARE(mode.currentIndex(),1);QVERIFY(mode.currentData().toBool());
+        QCOMPARE(input.text(),QString("unchanged-password"));QCOMPARE(input.layoutDirection(),Qt::LeftToRight);QCOMPARE(name.text(),QString("Connection"));
+        QCOMPARE(dynamic.text(),QObject::tr("Connection interrupted · retry in %1 seconds. Click Disconnect to stop.").arg(5));QVERIFY(checked.isChecked());QCOMPARE(toggle.count(),0);QCOMPARE(selection.count(),0);
+        ClientLanguage::apply("en");QApplication::processEvents();QCOMPARE(title.text(),QString("Connection"));QCOMPARE(button.text(),QString("Connect"));QCOMPARE(dynamic.text(),source.arg(5));
+        const auto dark=qApp->styleSheet();applyGozarnoTheme(false);const auto light=qApp->styleSheet();QVERIFY(!light.isEmpty());applyGozarnoTheme(true);QVERIFY(qApp->styleSheet()!=light);
+        QCOMPARE(input.text(),QString("unchanged-password"));QVERIFY(checked.isChecked());
+    }
+    void endpointCopiesOnlyTheClickedAddress() {
+        ProxyEndpointWidget widget;widget.setEndpoints("127.0.0.1:1080 | 192.0.2.10:1080");widget.show();
+        const auto buttons=widget.findChildren<QPushButton*>("copyProxyEndpoint");QCOMPARE(buttons.size(),2);
+        QTest::mouseClick(buttons[0],Qt::LeftButton);QCOMPARE(QApplication::clipboard()->text(),QString("127.0.0.1:1080"));
+        QTest::mouseClick(buttons[1],Qt::LeftButton);QCOMPARE(QApplication::clipboard()->text(),QString("192.0.2.10:1080"));
+        ClientLanguage::apply("fa");QApplication::processEvents();QVERIFY(buttons[0]->text().contains("127.0.0.1:1080"));
+        widget.clearEndpoints();QCOMPARE(widget.findChildren<QPushButton*>("copyProxyEndpoint").size(),0);
+    }
+    void automaticGamingIgnoresLegacyManualSettings() {
+        OcSettings settings;
+        const auto oldTargets=settings.value("Client/healthTargets");
+        const auto oldProfiles=settings.value("Client/gamingProfiles");
+        GamingProfile legacy; legacy.id=QUuid::createUuid().toString(); legacy.name="Legacy game";
+        legacy.route="direct"; legacy.autoMtu=false; legacy.mtu=1400;
+        legacy.applications={directory.path()+"/game.exe"}; legacy.background={directory.path()+"/cloud.exe"};
+        settings.setValue("Client/gamingProfiles",QJsonDocument(QJsonArray{legacy.toJson()}).toJson());
+        settings.setValue("Client/healthTargets",QStringList{"invalid","127.0.0.1","8.8.8.8"});
+        const auto profile=GamingProfile::automaticPreset();
+        QCOMPARE(profile.target,QString("8.8.8.8"));
+        QCOMPARE(profile.route,QString("inherit"));
+        QVERIFY(profile.applications.isEmpty()); QVERIFY(profile.background.isEmpty());
+        QVERIFY(profile.autoMtu); QVERIFY(!profile.automatic); QCOMPARE(profile.uploadKbps,0u);
+        const auto base=TrafficPolicy{}; QCOMPARE(GamingProfile::overlay(base,profile).rules.size(),base.rules.size());
+        settings.setValue("Client/healthTargets",QStringList{"bad","0.0.0.0","::1"});
+        QCOMPARE(GamingProfile::automaticPreset().target,QString("1.1.1.1"));
+        if(oldTargets.isValid()) settings.setValue("Client/healthTargets",oldTargets); else settings.remove("Client/healthTargets");
+        if(oldProfiles.isValid()) settings.setValue("Client/gamingProfiles",oldProfiles); else settings.remove("Client/gamingProfiles");
+    }
+    void gamingQualityMeasuresRealSamplesAndLossSeparately() {
+        QVector<GamingSample> samples;
+        for(int i=1;i<=10;++i) samples.append({double(i),false}); samples.append({-1,false}); samples.append({std::numeric_limits<double>::quiet_NaN(),false});
+        const auto summary=GamingQuality::summarize(samples);
+        QCOMPARE(summary.attempts,12); QCOMPARE(summary.replies,10); QCOMPARE(summary.median,5.5); QCOMPARE(summary.p95,10.); QCOMPARE(summary.jitter,1.);
+        QVERIFY(qAbs(summary.failedPercent-100./6)<.001); QVERIFY(summary.comparable()); QVERIFY(!summary.loadComparison);
+        QVERIFY(!GamingQuality::summarize({{-1,false}}).comparable());
+    }
+    void gamingLoadedLatencyAndRollbackNeedEnoughEvidence() {
+        QVector<GamingSample> samples; for(int i=0;i<8;++i) {samples.append({20,false}); samples.append({60,true});}
+        const auto summary=GamingQuality::summarize(samples); QVERIFY(summary.loadComparison); QCOMPARE(summary.loadedDelta,40.);
+        GamingSummary before=summary,after=summary; after.median=before.median+40; QVERIFY(GamingQuality::worse(before,after)); after.replies=2; QVERIFY(!GamingQuality::worse(before,after));
+        QCOMPARE(GamingQuality::summarize({{10,false},{80,true}}).loadComparison,false);
+    }
+    void gamingProfilesPreserveBaseRulesAndExcludeUnsafeThrottle() {
+        GamingProfile profile; profile.id=QUuid::createUuid().toString(); profile.name="Game"; profile.applications={directory.path()+"/game.exe"}; profile.background={directory.path()+"/cloud.exe"}; profile.route="vpn";
+        GamingProfile checked; QString error; QVERIFY(GamingProfile::fromJson(profile.toJson(),checked,error));
+        TrafficPolicy base; base.rules.append({"application",profile.applications.first(),"direct",true}); base.rules.append({"network","192.0.2.0/24","vpn",true});
+        const auto overlay=GamingProfile::overlay(base,checked); QCOMPARE(base.rules.first().action,QString("direct")); QCOMPARE(overlay.rules.size(),2); QCOMPARE(overlay.rules.last().action,QString("vpn"));
+        profile.background=profile.applications; QVERIFY(!GamingProfile::fromJson(profile.toJson(),checked,error));
+        profile.background={directory.path()+"/GozarnoVPN.exe"}; QVERIFY(!GamingProfile::fromJson(profile.toJson(),checked,error));
+        profile.background.clear(); profile.target="not-an-ip"; QVERIFY(!GamingProfile::fromJson(profile.toJson(),checked,error));
+    }
+    void gamingQosPlansUseOwnedNamesAndNoScriptInterpolation() {
+        GamingProfile profile; profile.id=QUuid::createUuid().toString(); profile.name="Game"; profile.background={directory.path()+"/cloud'$payload.exe"};
+        const auto plan=GamingQos::plan(profile); QCOMPARE(plan.size(),1); QVERIFY(GamingQos::validOwnedName(plan.first().toObject().value("name").toString()));
+        QVERIFY(!GamingQos::validOwnedName("OtherVendorPolicy")); QCOMPARE(plan.first().toObject().value("bits").toInteger(),qint64(1024000));
+        QVERIFY(!GamingQos::script(false).contains(profile.background.first())); QVERIFY(GamingQos::script(false).contains("ActiveStore")); QVERIFY(GamingQos::script(true).contains("policy ownership mismatch"));
+    }
+    void gamingOffAndMissingAdapterNeverProbeDirectly() {
+        GamingProfile profile; profile.target="1.1.1.1";
+        QCOMPARE(GamingQuality::probe("missing-gozarno-test-adapter",profile).milliseconds,-1.);
+        std::atomic_bool cancelled(true); QCOMPARE(GamingQuality::discoverMtu({},profile,1500,cancelled),0u);
+        GamingSession session; QVERIFY(!session.enabled()); QVERIFY(!session.protectsMatch()); session.setEnabled(true); QVERIFY(session.protectsMatch()); session.setEnabled(false); QVERIFY(!session.protectsMatch());
+        const auto report=QJsonDocument(session.report()).toJson(); QVERIFY(!report.contains("1.1.1.1")); QVERIFY(!report.contains("network"+QString("=").toUtf8()));
+    }
+    void installedGameScanRejectsEscapeAndHonorsCancellation() {
+        const QString root=directory.path()+"/SteamTest"; QVERIFY(QDir().mkpath(root+"/steamapps/common/TestGame/bin"));
+        const auto write=[](const QString& path,const QByteArray& bytes) {QFile f(path); if(!f.open(QIODevice::WriteOnly)) return false; return f.write(bytes)==bytes.size();};
+        QVERIFY(write(root+"/steamapps/common/TestGame/bin/game.exe","fixture")); QVERIFY(write(root+"/steamapps/common/TestGame/uninstall.exe","fixture"));
+        QVERIFY(write(root+"/steamapps/appmanifest_123.acf","\"name\" \"Test game\" \"installdir\" \"TestGame\""));
+        QVERIFY(write(root+"/steamapps/appmanifest_456.acf","\"name\" \"Escape\" \"installdir\" \"../Elsewhere\""));
+        std::atomic_bool cancelled(false); const auto games=GameDiscovery::steam(root,cancelled); QCOMPARE(games.size(),1); QCOMPARE(games.first().name,QString("Test game")); QVERIFY(games.first().executable.endsWith("game.exe"));
+        cancelled.store(true); QVERIFY(GameDiscovery::steam(root,cancelled).isEmpty());
+    }
+    void gamingProcessDetectionMatchesFullExecutablePath() {
+#ifdef _WIN32
+        QVERIFY(GamingProfile::processesRunning({QCoreApplication::applicationFilePath()}));
+        QVERIFY(!GamingProfile::processesRunning({directory.path()+"/"+QFileInfo(QCoreApplication::applicationFilePath()).fileName()}));
+#endif
+    }
+    void publicIpResponseRejectsInvalidData() {
+        QVERIFY(PublicIpLookup::parse("not json").isEmpty());
+        QVERIFY(PublicIpLookup::parse("{\"ip\":\"127.0.0.1\",\"country\":\"US\"}").isEmpty());
+        QVERIFY(PublicIpLookup::parse("{\"ip\":\"1.1.1.1\",\"country\":\"<b>\"}").isEmpty());
+        const auto value=PublicIpLookup::parse("{\"ip\":\"1.1.1.1\",\"country\":\"AU\",\"city\":\"Sydney\"}");
+        QCOMPARE(value.value("country").toString(),QString("AU"));
+        QCOMPARE(value.value("city").toString(),QString("Sydney"));
+    }
+    void diagnosesDoNotBlameTheServerWithoutEvidence() {
+        QCOMPARE(ConnectionHealth::classify(false,true,false,true,false),QString("network_unavailable"));
+        QCOMPARE(ConnectionHealth::classify(true,false,false,true,false),QString("tunnel_unavailable"));
+        QCOMPARE(ConnectionHealth::classify(true,true,false,true,true),QString("tunnel_unreachable"));
+        QCOMPARE(ConnectionHealth::classify(true,true,true,true,false),QString("dns_failed"));
+        QCOMPARE(ConnectionHealth::classify(true,true,true,false,false),QString("healthy"));
+    }
+    void dnsValidationRejectsWrongTransactionsErrorsAndTruncatedAnswers() {
+        auto reply=PinnedProbe::dnsQuery(0x1234); reply[2]=char(0x81); reply[3]=char(0x80); reply[7]=char(1);
+        QVERIFY(!PinnedProbe::dnsAnswer(reply,0x1234));
+        reply+=QByteArray::fromHex("c00c000100010000003c000401010101");
+        QVERIFY(PinnedProbe::dnsAnswer(reply,0x1234));
+        QVERIFY(!PinnedProbe::dnsAnswer(reply,0x9999));
+        QVERIFY(!PinnedProbe::dnsAnswer(reply.left(reply.size()-1),0x1234));
+        reply[3]=char(0x83); QVERIFY(!PinnedProbe::dnsAnswer(reply,0x1234));
+        reply[3]=char(0x80); reply[2]=char(0x83); QVERIFY(!PinnedProbe::dnsAnswer(reply,0x1234));
+    }
+    void fallbackUsesOnlyApprovedExistingProfilesOnce() {
+        FailoverPlan plan; plan.reset("primary",{"unknown","backup-b","primary","backup-b","backup-a"},{"primary","backup-a","backup-b","unapproved"});
+        QCOMPARE(plan.current(),QString("primary")); QCOMPARE(plan.next(),QString("backup-b"));
+        QCOMPARE(plan.next(),QString("backup-a")); QVERIFY(!plan.hasNext()); QVERIFY(plan.next().isEmpty());
+        plan.reset("primary",{}, {"primary","unapproved"}); QVERIFY(!plan.hasNext());
+    }
+    void fallbackDialogSavesOrderWithoutCopyingCredentials() {
+        OcSettings settings;
+        settings.setValue("server:primary/server","https://primary.example");
+        settings.setValue("server:backup/server","https://backup.example");
+        settings.setValue("server:primary/password","encrypted-primary"); settings.setValue("server:backup/password","encrypted-backup");
+        settings.setValue("server:backup/protocol-name","fortinet"); settings.sync();
+        FallbackDialog dialog("primary"); auto* list=dialog.findChild<QListWidget*>("fallbackProfiles"); QVERIFY(list); QCOMPARE(list->count(),1);
+        list->item(0)->setCheckState(Qt::Checked);
+        auto* buttons=dialog.findChild<QDialogButtonBox*>(); QVERIFY(buttons); buttons->button(QDialogButtonBox::Save)->click();
+        OcSettings stored; QCOMPARE(stored.value("server:primary/recovery/fallbacks").toStringList(),QStringList{"backup"});
+        QCOMPARE(stored.value("server:primary/password").toString(),QString("encrypted-primary"));
+        QCOMPARE(stored.value("server:backup/password").toString(),QString("encrypted-backup"));
+        QCOMPARE(stored.value("server:backup/protocol-name").toString(),QString("fortinet"));
+    }
+    void diagnosticExportRejectsSecretsAndArbitraryLogText() {
+        DiagnosticReport report;
+        report.record("failure",{{"reason","authentication"},{"error_code",-13},{"password","secret-password"},{"token","secret-token"},{"server","private.example"},{"path","C:/Users/private/key.pem"}});
+        report.record("raw log containing secret-password");
+        report.record("health",{{"reason","private.example"}});
+        report.record("protection_test",{{"test","ipv4_direct_tcp"},{"result","skipped"}});
+        const auto bytes=report.document().toJson();
+        QVERIFY(!bytes.contains("secret-password")); QVERIFY(!bytes.contains("secret-token"));
+        QVERIFY(!bytes.contains("private.example")); QVERIFY(!bytes.contains("key.pem"));
+        QVERIFY(bytes.contains("authentication")); QVERIFY(bytes.contains("skipped"));
+        for(int i=0;i<550;++i) report.record("recovery",{{"attempt",i}});
+        QCOMPARE(report.document().object().value("events").toArray().size(),500);
+    }
+    void resumeNotificationsAreCoalesced() {
+#ifdef _WIN32
+        NetworkEvents environment; QSignalSpy events(&environment,&NetworkEvents::environmentChanged);
+        MSG message{}; message.message=WM_POWERBROADCAST; message.wParam=PBT_APMRESUMEAUTOMATIC;
+        environment.nativeEventFilter({},&message,nullptr); environment.nativeEventFilter({},&message,nullptr);
+        QTest::qWait(1700); QCOMPARE(events.count(),1); QCOMPARE(events.at(0).at(0).toString(),QString("resume"));
+#endif
+    }
+    void recoveryNeedsRepeatedFailuresAndBacksOff() {
+        RecoveryPolicy policy;
+        QVERIFY(!policy.result(false, 0, true));
+        QVERIFY(!policy.result(false, 15000, true));
+        QVERIFY(policy.result(false, 30000, true));
+        QVERIFY(!policy.result(false, 45000, true));
+        QVERIFY(policy.result(false, 60000, true));
+        QVERIFY(!policy.result(false, 90000, true));
+        QVERIFY(policy.result(false, 120000, true));
+        QVERIFY(!policy.result(true, 121000, true));
+        QCOMPARE(policy.failures, 0); QCOMPARE(policy.attempts, 0);
+        QVERIFY(!policy.result(false, 130000, true));
+    }
+    void automaticRecoveryCanBeDisabledAndDelayIsBounded() {
+        RecoveryPolicy policy;
+        for (int i=0;i<50;++i) QVERIFY(!policy.result(false, i*15000, false));
+        QCOMPARE(policy.attempts, 0);
+        qint64 now=1000000;
+        for (int i=0;i<20;++i) {
+            QVERIFY(policy.result(false, now, true));
+            QVERIFY(policy.nextAttempt-now<=300000);
+            now=policy.nextAttempt;
+        }
+    }
+    void stoppingHealthMonitorCancelsPendingResults() {
+        ConnectionHealth health;
+        QSignalSpy recovery(&health, &ConnectionHealth::recoveryRequested);
+        QSignalSpy result(&health, &ConnectionHealth::healthChanged);
+        health.start("nonexistent-gozarno-interface");
+        QVERIFY(QMetaObject::invokeMethod(&health, "probe", Qt::DirectConnection));
+        health.stop();
+        health.recheck(); // A stopped session must never restart after resume.
+        QTest::qWait(50); QCOMPARE(recovery.count(),0); QCOMPARE(result.count(),0);
+    }
+    void killSwitchRejectsEmptyGatewayWithoutChangingSystem() {
+        KillSwitch protection; QString error;
+        QVERIFY(!protection.arm({},error)); QVERIFY(!error.isEmpty());
+        QVERIFY(!protection.active()); QVERIFY(protection.release(error));
+    }
     void initTestCase() {
         QVERIFY(directory.isValid());
         QSettings::setDefaultFormat(QSettings::IniFormat);

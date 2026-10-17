@@ -23,7 +23,7 @@ QLabel* label(const QString& value,const char* role,QWidget* parent) {
 }
 class TrafficChart : public QWidget {
 public:
-    TrafficChart(const std::deque<QPointF>& data,QWidget* parent) : QWidget(parent),data(data) { setMinimumHeight(118); setMaximumHeight(148); }
+    TrafficChart(const std::deque<QPointF>& data,QWidget* parent) : QWidget(parent),data(data) { setMinimumHeight(90); setMaximumHeight(112); }
 protected:
     void paintEvent(QPaintEvent*) override {
         QPainter p(this); p.setRenderHint(QPainter::Antialiasing);
@@ -42,7 +42,7 @@ private: const std::deque<QPointF>& data;
 }
 SessionActivity::SessionActivity(QWidget* parent) : QWidget(parent) {
     setObjectName("sessionActivity"); auto* root=new QVBoxLayout(this); root->setContentsMargins(0,0,0,0); root->setSpacing(18);
-    auto* frame=new QFrame(this); frame->setProperty("card",true); auto* layout=new QVBoxLayout(frame); layout->setContentsMargins(24,24,24,24); layout->setSpacing(16);
+    auto* frame=new QFrame(this); frame->setProperty("card",true); auto* layout=new QVBoxLayout(frame); layout->setContentsMargins(16,16,16,16); layout->setSpacing(10);
     auto* heading=new QHBoxLayout; heading->addWidget(label(tr("Session overview"),"section",frame)); heading->addStretch();
     stateLabel=label(tr("No active connection"),"muted",frame); stateLabel->setWordWrap(false); stateLabel->setObjectName("sessionState"); heading->addWidget(stateLabel); layout->addLayout(heading);
     auto* metrics=new QGridLayout; metrics->setHorizontalSpacing(24);
@@ -53,7 +53,7 @@ SessionActivity::SessionActivity(QWidget* parent) : QWidget(parent) {
     } layout->addLayout(metrics);
     rateLabel=label(tr("↓ Download 0 B/s     ↑ Upload 0 B/s"),"muted",frame); rateLabel->setObjectName("sessionRate"); layout->addWidget(rateLabel);
     chart=new TrafficChart(samples,frame); layout->addWidget(chart); layout->addWidget(label(tr("Green: download · Blue: upload · Last 60 samples"),"muted",frame)); root->addWidget(frame);
-    auto* details=new QFrame(this); details->setProperty("card",true); auto* grid=new QGridLayout(details); grid->setContentsMargins(24,24,24,24); grid->setHorizontalSpacing(24); grid->setVerticalSpacing(14);
+    auto* details=new QFrame(this); details->setProperty("card",true); auto* grid=new QGridLayout(details); grid->setContentsMargins(16,16,16,16); grid->setHorizontalSpacing(24); grid->setVerticalSpacing(8);
     grid->addWidget(label(tr("Network & encryption"),"section",details),0,0,1,2); int row=1;
     for(const auto& entry:QList<QPair<QString,QString>>{{"profile",tr("Server profile")},{"ip",tr("IPv4 address")},{"ip6",tr("IPv6 address")},{"dns",tr("DNS servers")},{"tls",tr("TLS encryption")},{"dtls",tr("DTLS encryption")}}) {
         grid->addWidget(label(entry.second,"muted",details),row,0); auto* value=label(tr("Available after connecting"),"value",details); value->setObjectName("session_"+entry.first); values[entry.first]=value; grid->addWidget(value,row++,1);

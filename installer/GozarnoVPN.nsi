@@ -6,7 +6,16 @@ Target amd64-unicode
 !include "x64.nsh"
 !include "WinVer.nsh"
 Name "Gozarno VPN"
-OutFile "..\dist\GozarnoVPN-1.2.1-Setup-x64.exe"
+!ifndef APP_VERSION
+  !define APP_VERSION "1.4.1"
+!endif
+OutFile "..\dist\GozarnoVPN-${APP_VERSION}-Setup-x64.exe"
+VIProductVersion "${APP_VERSION}.0"
+VIAddVersionKey "ProductName" "Gozarno VPN"
+VIAddVersionKey "ProductVersion" "${APP_VERSION}"
+VIAddVersionKey "FileVersion" "${APP_VERSION}.0"
+VIAddVersionKey "FileDescription" "Gozarno VPN Setup"
+VIAddVersionKey "LegalCopyright" "Gozarno and contributors"
 InstallDir "$PROGRAMFILES64\Gozarno VPN"
 InstallDirRegKey HKLM "Software\Gozarno\Installer" "InstallDir"
 RequestExecutionLevel admin
@@ -33,6 +42,13 @@ Function .onInit
     Abort
   ${EndIf}
   SetRegView 64
+  ReadRegStr $0 HKLM "Software\Gozarno\Installer" "InstallDir"
+  ${If} $0 != ""
+    StrCpy $INSTDIR $0
+    ; Core is section 0, optional shared prerequisites are section 1.
+    ; Upgrade the client by default without reinstalling shared drivers/runtimes.
+    SectionSetFlags 1 0
+  ${EndIf}
   ReadRegStr $0 HKLM "SYSTEM\CurrentControlSet\Control\Session Manager\Environment" "PROCESSOR_ARCHITECTURE"
   ${If} $0 == "ARM64"
     MessageBox MB_ICONSTOP "This release contains x64 network drivers and cannot be installed on ARM64."
@@ -40,10 +56,40 @@ Function .onInit
   ${EndIf}
 FunctionEnd
 
+; Check for locked application files BEFORE replacing any part of an installation.
+; Never kill a VPN process: the user quits normally so routes and filters release.
+Function CheckInstalledFile
+  Exch $0
+  Push $1
+  IfFileExists "$0" 0 done
+retry:
+  System::Call 'kernel32::CreateFileW(w r0, i 0x40010000, i 7, p 0, i 3, i 0, p 0) p .r1'
+  ${If} $1 == -1
+    IfSilent blocked
+    MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "Gozarno VPN or its routing helper is still running, or Windows has locked an installed file.$\r$\n$\r$\nDisconnect, choose Help & more > Quit (closing the window may only hide it), then click Retry. Your saved profiles will be preserved.$\r$\n$\r$\nFile: $0" IDRETRY retry
+blocked:
+    SetErrorLevel 2
+    Abort
+  ${EndIf}
+  System::Call 'kernel32::CloseHandle(p r1)'
+done:
+  Pop $1
+  Pop $0
+FunctionEnd
+
+Function EnsureApplicationClosed
+  Push "$INSTDIR\GozarnoVPN.exe"
+  Call CheckInstalledFile
+  Push "$INSTDIR\backend\ProxiFyre.exe"
+  Call CheckInstalledFile
+FunctionEnd
+
 Section "Gozarno VPN (required)" Core
   SectionIn RO
+  Call EnsureApplicationClosed
   SetShellVarContext all
   SetOutPath "$INSTDIR"
+  SetOverwrite on
   File /r "..\dist\GozarnoVPN\*.*"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   CreateDirectory "$SMPROGRAMS\Gozarno VPN"
@@ -52,7 +98,8 @@ Section "Gozarno VPN (required)" Core
   CreateShortcut "$DESKTOP\Gozarno VPN.lnk" "$INSTDIR\GozarnoVPN.exe"
   WriteRegStr HKLM "Software\Gozarno\Installer" "InstallDir" "$INSTDIR"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\GozarnoVPN" "DisplayName" "Gozarno VPN"
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\GozarnoVPN" "DisplayVersion" "1.2.1"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\GozarnoVPN" "DisplayVersion" "${APP_VERSION}"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\GozarnoVPN" "InstallLocation" "$INSTDIR"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\GozarnoVPN" "Publisher" "Gozarno"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\GozarnoVPN" "UninstallString" '$\"$INSTDIR\Uninstall.exe$\"'
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\GozarnoVPN" "DisplayIcon" "$INSTDIR\GozarnoVPN.exe"
@@ -60,7 +107,8 @@ Section "Gozarno VPN (required)" Core
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\GozarnoVPN" "NoRepair" 1
 SectionEnd
 
-Section "Application routing prerequisites (TCP + UDP)" AppRouting
+; Isolated SOCKS and core VPN do not require the optional packet-filter driver.
+Section /o "Optional app routing driver (not for SOCKS)" AppRouting
   SetRegView 32
   ReadRegDWORD $0 HKLM "SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full" "Release"
   SetRegView 64
@@ -76,6 +124,31 @@ Section "Application routing prerequisites (TCP + UDP)" AppRouting
     ReadRegDWORD $0 HKLM "SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64" "Major"
     ReadRegDWORD $1 HKLM "SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64" "Minor"
     SetRegView 64
+  ${EndIf}
+  ; Some newer runtime installers omit the registry inventory. Check the actual
+  ; installed x64 DLLs before trying to install an older bundled redistributable.
+  ${If} $0 < 14
+  ${OrIf} $1 < 44
+    ClearErrors
+    GetDLLVersion "$SYSDIR\vcruntime140.dll" $3 $4
+    ${IfNot} ${Errors}
+      IntOp $5 $3 >> 16
+      IntOp $6 $3 & 0xFFFF
+      ${If} $5 == 14
+      ${AndIf} $6 >= 44
+        ClearErrors
+        GetDLLVersion "$SYSDIR\msvcp140.dll" $3 $4
+        ${IfNot} ${Errors}
+          IntOp $5 $3 >> 16
+          IntOp $6 $3 & 0xFFFF
+          ${If} $5 == 14
+          ${AndIf} $6 >= 44
+            StrCpy $0 14
+            StrCpy $1 $6
+          ${EndIf}
+        ${EndIf}
+      ${EndIf}
+    ${EndIf}
   ${EndIf}
   ${If} $0 < 14
   ${OrIf} $1 < 44

@@ -12,7 +12,7 @@ whose current upstream development is hosted on
 Original authors' credits and the GPL license are retained.
 
 English is the default interface language; Persian with right-to-left layout is
-available in Settings. Windows x64 is the target of this fork's packaged builds.
+available in Settings, with immediate language and theme switching. Windows x64 is the target of this fork's packaged builds.
 Source and build instructions are published alongside the client; generated
 packages belong in GitHub Releases, not the source repository.
 

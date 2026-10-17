@@ -5,6 +5,7 @@ set_property(SOURCE timestamp.cpp PROPERTY SKIP_AUTOGEN ON)
 
 set(${PROJECT_NAME}_SRCS
     openconnect-gui.qrc
+    flags.qrc
     cert.cpp
     common.h
     config.h.in
@@ -21,6 +22,7 @@ set(${PROJECT_NAME}_SRCS
     dialog/VpnProtocolModel.cpp
     dialog/mainwindow.cpp
     dialog/ClientInterface.cpp
+    dialog/ProxyEndpointWidget.cpp
     dialog/SessionActivity.cpp
     dialog/AboutDialog.cpp
     dialog/ComponentsWidget.cpp
@@ -46,8 +48,21 @@ set(${PROJECT_NAME}_SRCS
     client/ServerCatalog.cpp
     client/VpnRoutes.cpp
     client/SocksBridge.cpp
+    client/ProxyStack.cpp
+    client/ProxySettings.cpp
     client/AppRouter.cpp
     client/GamingMode.cpp
+    client/GamingProfile.cpp
+    client/GamingQuality.cpp
+    client/GamingQos.cpp
+    client/GamingSession.cpp
+    client/ConnectionHealth.cpp
+    client/PublicIpLookup.cpp
+    client/NetworkEvents.cpp
+    client/DiagnosticReport.cpp
+    client/ProtectionValidation.cpp
+    dialog/FallbackDialog.cpp
+    client/KillSwitch.cpp
     dialog/ServerLibrary.cpp
     dialog/TrafficPolicyDialog.cpp
 )
@@ -66,6 +81,14 @@ configure_file(
 )
 
 if(MINGW)
+    # Generate the resource during configuration so Ninja observes version
+    # changes before deciding whether to rebuild the resource object.
+    if(PROJ_ADMIN_PRIV_ELEVATION)
+        set(UAC_FLAG "")
+    else()
+        set(UAC_FLAG "//")
+    endif()
+    configure_file(${PROJECT_NAME}.rc.in ${PROJECT_NAME}.rc @ONLY)
     list(APPEND ${PROJECT_NAME}_RESOURCES
         ${PROJECT_NAME}.rc.in
         ${PROJECT_NAME}.rc
@@ -121,6 +144,8 @@ if(MINGW)
         ole32
         uuid
         version
+        fwpuclnt
+        rpcrt4
     )
 endif()
 
@@ -292,3 +317,5 @@ install(CODE "
     fixup_bundle(\"${APPS}\" \"${additionalLib}\" \"${libSearchDirs}\")
     " DESTINATION . COMPONENT App
 )
+
+target_link_libraries(${PROJECT_NAME} gozarno_lwip)
