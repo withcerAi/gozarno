@@ -575,7 +575,7 @@ int VpnInfo::connect()
                 if (!recoveryPeers.contains(address)) recoveryPeers.append(address);
         trafficPolicy = TrafficPolicy::load(ss->get_label(), &error);
         baseTrafficPolicy=trafficPolicy;
-        if (!error.isEmpty() || !AppRouter::preflight(trafficPolicy, error)) {
+        if (!error.isEmpty() || !AppRouter::preflight(trafficPolicy, error, &driverSetupRequired)) {
             last_err = error; clientFailure = true; return -1;
         }
         routes.reset(new VpnRoutes(trafficPolicy));

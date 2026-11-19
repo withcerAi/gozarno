@@ -468,8 +468,12 @@ private slots:
     void missingAppBackendFailsExplicitly() {
         OcSettings settings; settings.setValue("Client/appRouterPath", directory.filePath("absent.exe"));
         TrafficPolicy policy; policy.rules.append({"application", "C:\\Program Files\\Browser\\browser.exe", "vpn", true});
-        QString error; QVERIFY(!AppRouter::preflight(policy, error)); QVERIFY(!error.isEmpty());
-        policy.rules.clear(); QVERIFY(AppRouter::preflight(policy, error));
+        // Missing ProxiFyre is a different failure: never offer a driver install.
+        bool needsDriver = true;
+        QString error; QVERIFY(!AppRouter::preflight(policy, error, &needsDriver)); QVERIFY(!error.isEmpty());
+        QVERIFY(!needsDriver);
+        policy.rules.clear(); needsDriver = true;
+        QVERIFY(AppRouter::preflight(policy, error, &needsDriver)); QVERIFY(!needsDriver);
     }
     void connectionActionIconsAreVisibleAtDisplayScales() {
         for (const auto action : {ConnectionButtonAction::Connect, ConnectionButtonAction::Disconnect, ConnectionButtonAction::Cancel}) {

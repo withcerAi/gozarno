@@ -65,6 +65,9 @@ extern "C" {
 
 #include <csignal>
 #include <cstdio>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 static void log_callback(int level, const char* str)
 {
@@ -142,6 +145,22 @@ int pin_callback(void* userdata, int attempt, const char* token_url,
 
 int main(int argc, char* argv[])
 {
+#ifdef _WIN32
+    // Wait before QtSingleApplication takes its single-instance lock. Restart
+    // without auto-connect arguments; normal shutdown releases VPN protection.
+    if (argc == 3 && QString::fromLocal8Bit(argv[1]) == "--restart-after-pid") {
+        bool valid = false;
+        const auto pid = QString::fromLocal8Bit(argv[2]).toULong(&valid);
+        if (!valid || !pid || pid == GetCurrentProcessId()) return 1;
+        HANDLE previous = OpenProcess(SYNCHRONIZE, FALSE, pid);
+        if (previous) {
+            const auto result = WaitForSingleObject(previous, 30000);
+            CloseHandle(previous);
+            if (result != WAIT_OBJECT_0) return 1;
+        } else if (GetLastError() != ERROR_INVALID_PARAMETER) return 1;
+        argc = 1; argv[1] = nullptr;
+    }
+#endif
     bool haveTray = false;
 
     qputenv("LOG2FILE", "1");

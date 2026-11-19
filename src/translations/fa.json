@@ -776,5 +776,21 @@
   "This SOCKS5 proxy requires its separate proxy username and password.": "این پروکسی SOCKS5 به نام کاربری و رمز اختصاصی پروکسی نیاز دارد.",
   "The SOCKS5 proxy username or password is incorrect.": "نام کاربری یا رمز پروکسی SOCKS5 اشتباه است.",
   "This SOCKS tunnel supports IPv4. Enable remote DNS through SOCKS5 in your app.": "این تونل SOCKS از IPv4 پشتیبانی می‌کند. در برنامه مصرف‌کننده، DNS از طریق SOCKS5 را فعال کنید.",
-  "The SOCKS destination could not be resolved through the tunnel.": "نام مقصد SOCKS از طریق تونل ترجمه نشد."
+  "The SOCKS destination could not be resolved through the tunnel.": "نام مقصد SOCKS از طریق تونل ترجمه نشد.",
+
+  "Disconnect before installing application routing prerequisites.": "پیش از نصب پیش‌نیازهای هدایت ترافیک برنامه‌ها، اتصال را قطع کنید.",
+  "The application routing driver is missing or is not running. Install or repair it now? Windows will ask for administrator permission. Gozarno will restart after successful setup. Your saved profiles will be kept.": "درایور هدایت ترافیک برنامه‌ها نصب نیست یا اجرا نمی‌شود. می‌خواهید اکنون آن را نصب یا تعمیر کنیم؟ ویندوز اجازهٔ دسترسی مدیر را درخواست می‌کند. پس از نصب موفق، گذرنو دوباره باز می‌شود. پروفایل‌های ذخیره‌شده حفظ می‌شوند.",
+  "Install or repair": "نصب یا تعمیر",
+  "Not now": "فعلاً نه",
+  "The bundled driver installer is missing. Reinstall Gozarno using the full Setup package.": "فایل نصب درایور همراه برنامه پیدا نشد. گذرنو را با بستهٔ کامل نصب دوباره نصب کنید.",
+  "Could not start driver setup (Windows error %1).": "نصاب درایور اجرا نشد (خطای ویندوز %1).",
+  "Installing application routing prerequisites…": "در حال نصب پیش‌نیازهای هدایت ترافیک برنامه‌ها…",
+  "Restart required": "نیاز به راه‌اندازی دوباره",
+  "Setup needs a Windows restart. Restart your computer before using application rules.": "برای تکمیل نصب، ویندوز باید دوباره راه‌اندازی شود. پیش از استفاده از قوانین برنامه‌ها، رایانه را ری‌استارت کنید.",
+  "Driver setup did not complete successfully (code %1). See the setup message and %TEMP%\\GozarnoVPN-driver-install.log. You can try again from Settings.": "نصب درایور با موفقیت کامل نشد (کد %1). پیام نصاب و فایل %TEMP%\\GozarnoVPN-driver-install.log را بررسی کنید. می‌توانید از تنظیمات دوباره تلاش کنید.",
+  "The driver is ready. Close and reopen Gozarno to finish.": "درایور آماده است. برای تکمیل کار، گذرنو را ببندید و دوباره باز کنید.",
+
+  "Preview isolated SOCKS mode": "پیش‌نمایش حالت ایزولهٔ SOCKS",
+  "Test the selected saved profile and temporary protection; save a private-data-free report and exit": "آزمایش پروفایل ذخیره‌شدهٔ انتخابی و حفاظت موقت؛ ذخیرهٔ گزارش بدون داده‌های خصوصی و خروج",
+  "Validate only isolated SOCKS using the saved profile; write a sanitized report": "اعتبارسنجی فقط SOCKS ایزوله با پروفایل ذخیره‌شده؛ نوشتن گزارش بدون اطلاعات حساس"
 }

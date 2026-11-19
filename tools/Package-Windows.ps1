@@ -59,6 +59,9 @@ Copy-Item (Join-Path $projectRoot 'docs/client-modernization.md') -Destination (
 Copy-Item (Join-Path $projectRoot 'docs/socks-mode.md') -Destination (Join-Path $stage 'SOCKS-README.md')
 Copy-Item (Join-Path $projectRoot 'docs/third-party.md') -Destination (Join-Path $stage 'licenses/third-party.md')
 Copy-Item (Join-Path $projectRoot 'docs/source-build.md') -Destination (Join-Path $stage 'licenses/source-build.md')
+# Build the offline helper before enumerating uninstall files and compiling Setup.
+& (Join-Path $runtimeRoot 'makensis.exe') (Join-Path $projectRoot 'installer/GozarnoDriverSetup.nsi')
+if ($LASTEXITCODE) { throw 'Driver helper compilation failed' }
 $uninstallCommands=New-Object Collections.Generic.List[string]
 Get-ChildItem -LiteralPath $stage -Recurse -File | ForEach-Object {
   $relative=$_.FullName.Substring($stage.Length+1)

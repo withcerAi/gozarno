@@ -54,6 +54,7 @@ public:
     bool isProxyMode() const { return proxySettings.enabled; }
     void restoreGamingRoutingIfDisabled();
     bool clientFailure = false;
+    bool driverSetupRequired = false;
     bool diagnosticMode = false;
 
     QString last_err;
