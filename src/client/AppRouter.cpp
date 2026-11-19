@@ -57,8 +57,9 @@ static bool hasApplicationRules(const TrafficPolicy& policy)
 }
 AppRouter::AppRouter() : impl(new Impl) {}
 AppRouter::~AppRouter() { stop(); }
-bool AppRouter::preflight(const TrafficPolicy& policy, QString& error)
+bool AppRouter::preflight(const TrafficPolicy& policy, QString& error, bool* driverSetupRequired)
 {
+    if (driverSetupRequired) *driverSetupRequired = false;
     if (!hasApplicationRules(policy)) return true;
 #ifdef _WIN32
     if (!QFile::exists(enginePath())) {
@@ -72,6 +73,7 @@ bool AppRouter::preflight(const TrafficPolicy& policy, QString& error)
     if (service) CloseServiceHandle(service);
     if (manager) CloseServiceHandle(manager);
     if (!ready) {
+        if (driverSetupRequired) *driverSetupRequired = true;
         error = QObject::tr("The local Windows Packet Filter driver is not running. Install the ProxiFyre prerequisites on this device before using application rules.");
         return false;
     }
