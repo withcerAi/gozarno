@@ -7,7 +7,7 @@ Target amd64-unicode
 !include "WinVer.nsh"
 Name "Gozarno VPN"
 !ifndef APP_VERSION
-  !define APP_VERSION "1.4.1"
+  !define APP_VERSION "1.4.2"
 !endif
 OutFile "..\dist\GozarnoVPN-${APP_VERSION}-Setup-x64.exe"
 VIProductVersion "${APP_VERSION}.0"

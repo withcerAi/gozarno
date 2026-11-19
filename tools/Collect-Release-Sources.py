@@ -35,7 +35,7 @@ def inventory(payload):
     for file in sorted(payload.rglob('*')):
         if not file.is_file() or file.suffix.lower() not in ('.dll','.exe'): continue
         relative=file.relative_to(payload).as_posix()
-        if relative.startswith(('$','backend/')) or file.name.lower() in ('gozarnovpn.exe','wintun.dll','libopenconnect-5.dll','uninstall.exe'): continue
+        if relative.startswith(('$','backend/')) or file.name.lower() in ('gozarnovpn.exe','gozarnodriversetup.exe','wintun.dll','libopenconnect-5.dll','uninstall.exe'): continue
         digest=hashlib.sha256(file.read_bytes()).hexdigest()
         candidates=[p for p in by_leaf.get(file.name.lower(),[]) if p[2]==digest]
         if len(candidates)!=1:

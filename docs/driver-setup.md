@@ -38,9 +38,12 @@ coverage and placeholder checks pass. The preflight regression test now checks
 that a missing ProxiFyre executable and a policy without application rules do not
 request driver installation.
 
-The Qt/OpenConnect development toolchain is unavailable in the editing environment:
-the modified C++ client and Qt tests have not been built or run. A release still
-requires the normal full build and tests plus clean Windows 10/11 verification:
+The 1.4.2 client and complete installer were subsequently built using the existing
+MSYS2/Qt/OpenConnect toolchain. All 43 client tests and 15 proxy tests pass, as does
+the packet-I/O ABI smoke test. The 63 packaged third-party EXE/DLL files match the
+previous release's staging payload byte for byte. Upstream prerequisite signatures
+are valid. The release is a prerelease because clean Windows 10/11 installation
+and the following end-to-end driver setup checks remain unverified:
 
 - Missing driver: accept setup, verify service and one client restart.
 - Installed but stopped compatible driver: verify it starts without MSI replacement.
@@ -50,4 +53,4 @@ requires the normal full build and tests plus clean Windows 10/11 verification:
 - English/Persian prompts, saved profiles, and normal VPN cleanup after restart.
 - SOCKS and profiles without application rules do not offer this setup.
 
-No driver was installed on the editing machine and no GitHub release was published.
+No driver was installed on the editing machine during validation.

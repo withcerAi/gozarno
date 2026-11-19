@@ -5,6 +5,13 @@ Target amd64-unicode
 !include "x64.nsh"
 !include "WinVer.nsh"
 Name "Gozarno application routing setup"
+!ifndef APP_VERSION
+  !define APP_VERSION "1.4.2"
+!endif
+VIProductVersion "${APP_VERSION}.0"
+VIAddVersionKey "ProductName" "Gozarno application routing setup"
+VIAddVersionKey "FileVersion" "${APP_VERSION}.0"
+VIAddVersionKey "FileDescription" "Offline application routing prerequisites"
 OutFile "..\dist\GozarnoVPN\GozarnoDriverSetup.exe"
 RequestExecutionLevel admin
 SetCompressor /SOLID lzma
