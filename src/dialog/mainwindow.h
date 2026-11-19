@@ -131,7 +131,7 @@ signals:
     void timeout(void);
     void readyToShutdown();
     void version_download_completed_sig();
-    void client_error_sig(QString message);
+    void client_error_sig(QString message, bool driverSetupRequired = false);
     void tunnel_ready_sig(QString interfaceName);
     void proxy_ready_sig(QString endpoints);
     void proxy_diagnostics_sig(QJsonObject counters);
@@ -144,6 +144,8 @@ private slots:
     void checkForUpdatesDialog();
 
 private:
+    void offerDriverSetup();
+    bool driverSetupBusy = false;
     // Client interface changes, 2026-10-06.
     void setupClientInterface();
     void buildClientShell();

@@ -43,6 +43,13 @@
 #include <QSpinBox>
 #include <QSignalBlocker>
 #include <QFileDialog>
+#include <QProcess>
+#include <QFileInfo>
+#include <QDir>
+#ifdef _WIN32
+#include <windows.h>
+#include <shellapi.h>
+#endif
 
 extern "C" {
 #include <gnutls/gnutls.h>
@@ -124,10 +131,13 @@ MainWindow::MainWindow(QWidget* parent, bool useTray, const QString profileName)
     , ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
-    connect(this, &MainWindow::client_error_sig, this, [this](const QString& message) {
+    connect(this, &MainWindow::client_error_sig, this, [this](const QString& message, bool driverSetupRequired) {
         recoveryBlocked = true;
         diagnosticReport.record("failure", {{"reason","configuration"}});
-        if (!qApp->property("diagnosticMode").toBool()) QMessageBox::warning(this, tr("Client configuration"), message);
+        if (!qApp->property("diagnosticMode").toBool()) {
+            if (driverSetupRequired) offerDriverSetup();
+            else QMessageBox::warning(this, tr("Client configuration"), message);
+        }
     }, Qt::QueuedConnection);
     connect(this, &MainWindow::automatic_recovery_blocked_sig, this, [this] {
         recoveryBlocked = true;
@@ -750,7 +760,7 @@ static void main_loop(VpnInfo* vpninfo, MainWindow* m)
             if (qApp->property("diagnosticMode").toBool()) goto fail;
             if (vpninfo->clientFailure) {
                 Logger::instance().addMessage(vpninfo->last_err);
-                emit m->client_error_sig(vpninfo->last_err);
+                emit m->client_error_sig(vpninfo->last_err, vpninfo->driverSetupRequired);
                 goto fail;
             }
             if (retries-- <= 0)
@@ -828,6 +838,7 @@ void MainWindow::on_disconnectClicked()
 
 void MainWindow::on_connectClicked()
 {
+    if (driverSetupBusy || shuttingDown) return;
     if (!recoveryLaunch && (reconnectTimer->isActive() || waitingForNetwork)) {
         on_disconnectClicked(); return;
     }
@@ -1237,7 +1248,9 @@ void MainWindow::setupClientInterface()
     connect(engineButton, &QPushButton::clicked, this, [this]() {
         TrafficPolicy check; check.rules.append({"application", "C:/Application.exe", "vpn", true});
         QString error;
-        if (AppRouter::preflight(check,error)) QMessageBox::information(this,tr("Application routing"),tr("Local application routing prerequisites are available. Add program rules to a server's traffic policy."));
+        bool needsDriver = false;
+        if (AppRouter::preflight(check,error,&needsDriver)) QMessageBox::information(this,tr("Application routing"),tr("Local application routing prerequisites are available. Add program rules to a server's traffic policy."));
+        else if (needsDriver) offerDriverSetup();
         else QMessageBox::warning(this,tr("Setup required"),error);
     });
     connect(theme, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
@@ -1332,7 +1345,83 @@ bool MainWindow::writeDiagnosticReport(const QString& path) {
     QSaveFile file(path); const auto bytes=diagnosticReport.document().toJson(QJsonDocument::Indented);
     return file.open(QIODevice::WriteOnly) && file.write(bytes)==bytes.size() && file.commit();
 }
+void MainWindow::offerDriverSetup() {
+#ifdef _WIN32
+    if (driverSetupBusy || shuttingDown) return;
+    // Preflight runs on the connection worker. Let it release its state first.
+    if (futureWatcher.isRunning() || protectionWatcher.isRunning()) {
+        QTimer::singleShot(200, this, &MainWindow::offerDriverSetup);
+        return;
+    }
+    if (currentConnectionState != STATUS_DISCONNECTED) {
+        QMessageBox::information(this, tr("Application routing"), tr("Disconnect before installing application routing prerequisites."));
+        return;
+    }
+    driverSetupBusy = true;
+    QMessageBox prompt(QMessageBox::Question, tr("Application routing"),
+        tr("The application routing driver is missing or is not running. Install or repair it now? Windows will ask for administrator permission. Gozarno will restart after successful setup. Your saved profiles will be kept."),
+        QMessageBox::NoButton, this);
+    auto* install = prompt.addButton(tr("Install or repair"), QMessageBox::AcceptRole);
+    prompt.addButton(tr("Not now"), QMessageBox::RejectRole);
+    prompt.exec();
+    if (prompt.clickedButton() != install) { driverSetupBusy = false; return; }
+    const auto helper = QDir::toNativeSeparators(QCoreApplication::applicationDirPath() + "/GozarnoDriverSetup.exe");
+    if (!QFileInfo(helper).isFile()) {
+        driverSetupBusy = false;
+        QMessageBox::warning(this, tr("Setup required"), tr("The bundled driver installer is missing. Reinstall Gozarno using the full Setup package."));
+        return;
+    }
+    SHELLEXECUTEINFOW launch{};
+    launch.cbSize = sizeof(launch);
+    launch.fMask = SEE_MASK_NOCLOSEPROCESS;
+    launch.hwnd = reinterpret_cast<HWND>(winId());
+    launch.lpVerb = L"runas";
+    launch.lpFile = reinterpret_cast<const wchar_t*>(helper.utf16());
+    launch.nShow = SW_SHOWNORMAL;
+    if (!ShellExecuteExW(&launch) || !launch.hProcess) {
+        const auto error = GetLastError();
+        driverSetupBusy = false;
+        if (error != ERROR_CANCELLED)
+            QMessageBox::warning(this, tr("Setup required"), tr("Could not start driver setup (Windows error %1).").arg(error));
+        return;
+    }
+    auto* progress = new QProgressDialog(tr("Installing application routing prerequisites…"), QString(), 0, 0, this);
+    progress->setWindowModality(Qt::ApplicationModal);
+    progress->setCancelButton(nullptr);
+    progress->setWindowFlags(progress->windowFlags() & ~Qt::WindowCloseButtonHint);
+    progress->show();
+    auto* timer = new QTimer(this);
+    connect(timer, &QTimer::timeout, this, [this, timer, progress, process=launch.hProcess] {
+        if (WaitForSingleObject(process, 0) == WAIT_TIMEOUT) return;
+        DWORD code = 1;
+        GetExitCodeProcess(process, &code);
+        CloseHandle(process);
+        timer->stop(); timer->deleteLater(); progress->close(); progress->deleteLater();
+        driverSetupBusy = false;
+        if (code == 3010) {
+            QMessageBox::information(this, tr("Restart required"), tr("Setup needs a Windows restart. Restart your computer before using application rules."));
+            return;
+        }
+        TrafficPolicy check; check.rules.append({"application", "C:/Application.exe", "vpn", true});
+        QString error;
+        if (code != 0 || !AppRouter::preflight(check, error)) {
+            QMessageBox::warning(this, tr("Setup required"), tr("Driver setup did not complete successfully (code %1). See the setup message and %TEMP%\\GozarnoVPN-driver-install.log. You can try again from Settings.").arg(code));
+            return;
+        }
+        OcSettings settings; settings.sync();
+        if (!QProcess::startDetached(QCoreApplication::applicationFilePath(),
+                {"--restart-after-pid", QString::number(QCoreApplication::applicationPid())})) {
+            QMessageBox::information(this, tr("Application routing"), tr("The driver is ready. Close and reopen Gozarno to finish."));
+            return;
+        }
+        requestShutdown();
+    });
+    timer->start(250);
+#endif
+}
+
 void MainWindow::requestShutdown() {
+    if (driverSetupBusy) return;
     if(shuttingDown) return;
     shuttingDown=true; on_disconnectClicked();
     if (!futureWatcher.isRunning() && !protectionWatcher.isRunning()) qApp->quit();
